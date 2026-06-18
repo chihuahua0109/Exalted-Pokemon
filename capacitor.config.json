@@ -1,0 +1,11 @@
+{
+  "appId": "com.exalted.pokemon",
+  "appName": "Exalted Pokemon",
+  "webDir": "public",
+  "ios": {
+    "contentInset": "always"
+  },
+  "server": {
+    "iosScheme": "capacitor"
+  }
+}

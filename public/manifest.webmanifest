@@ -1,0 +1,26 @@
+{
+  "name": "Exalted Pokémon",
+  "short_name": "Exalted",
+  "description": "Pokémon TCG collection & market value tracker with camera card scanning.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0c0f1a",
+  "theme_color": "#0c0f1a",
+  "categories": ["productivity", "utilities", "shopping"],
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-maskable.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

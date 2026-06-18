@@ -1,0 +1,27 @@
+# Render.com deployment blueprint for the Exalted Pokemon backend.
+# Deploy: push this repo to GitHub, then in Render: New > Blueprint > pick repo.
+#
+# The persistent disk keeps user accounts + inventory across restarts/deploys.
+# Disks require a paid instance type (Starter). On the free tier, remove the
+# `disk:` block and `DATA_DIR` — but note the free tier's filesystem is wiped
+# on every restart/spin-down, so accounts would not persist.
+services:
+  - type: web
+    name: exalted-pokemon
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /data
+      # Set this in the Render dashboard (your OCR.space key) — keep it secret.
+      - key: OCRSPACE_API_KEY
+        sync: false
+    disk:
+      name: exalted-data
+      mountPath: /data
+      sizeGB: 1

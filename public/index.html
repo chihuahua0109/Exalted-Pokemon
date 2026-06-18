@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0" />
+    <title>Exalted Pokémon — Collection &amp; Market Tracker</title>
+    <link rel="preconnect" href="https://tcgplayer-cdn.tcgplayer.com" />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <meta name="theme-color" content="#0c0f1a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Exalted" />
+    <link rel="icon" href="icon.svg" />
+    <link rel="apple-touch-icon" href="icon.svg" />
+  </head>
+  <body>
+    <!-- AUTH SCREEN (shown when signed out) -->
+    <div id="auth-screen" class="auth-screen hidden">
+      <div class="auth-card">
+        <div class="auth-brand">
+          <span class="logo">⚡</span>
+          <h1>Exalted Pokémon</h1>
+        </div>
+        <p class="auth-sub">Track your collection &amp; live market value</p>
+
+        <div class="auth-tabs">
+          <button class="auth-tab active" data-auth="login" type="button">Log in</button>
+          <button class="auth-tab" data-auth="register" type="button">Sign up</button>
+        </div>
+
+        <form id="auth-form" autocomplete="on">
+          <label class="auth-field">
+            <span>Username</span>
+            <input id="auth-username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="yourname" />
+          </label>
+          <label class="auth-field">
+            <span>Password</span>
+            <input id="auth-password" name="password" type="password" autocomplete="current-password" placeholder="••••••••" />
+          </label>
+          <div id="auth-error" class="auth-error hidden"></div>
+          <button class="btn primary auth-submit" id="auth-submit" type="submit">Log in</button>
+        </form>
+
+        <p class="auth-hint" id="auth-switch-hint">New here? <button class="link-btn" data-auth="register" type="button">Create an account</button></p>
+      </div>
+    </div>
+
+    <!-- MAIN APP (shown when signed in) -->
+    <div id="app-root" class="hidden">
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">⚡</span>
+        <div>
+          <h1>Exalted Pokémon</h1>
+          <p class="tagline">Collection &amp; live TCGplayer market value</p>
+        </div>
+      </div>
+      <nav class="tabs">
+        <button class="tab active" data-view="collection">My Collection</button>
+        <button class="tab" data-view="add">Add Cards</button>
+        <button class="tab" data-view="wishlist">Wishlist</button>
+      </nav>
+      <div class="topbar-actions">
+        <button class="btn primary install-btn hidden" id="install-btn">⬇ Install app</button>
+        <div class="user-menu">
+          <button class="user-pill" id="user-pill" type="button">
+            <span class="user-avatar" id="user-avatar">?</span>
+            <span class="user-name" id="user-name">…</span>
+            <span class="user-caret">▾</span>
+          </button>
+          <div class="user-dropdown hidden" id="user-dropdown">
+            <div class="user-dropdown-head">
+              <span class="user-avatar lg" id="user-avatar-lg">?</span>
+              <div>
+                <div class="user-dropdown-name" id="user-dropdown-name">…</div>
+                <div class="user-dropdown-sub">Signed in</div>
+              </div>
+            </div>
+            <button class="user-dropdown-item" id="logout-btn" type="button">↩ Log out</button>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- COLLECTION VIEW -->
+    <main id="view-collection" class="view active">
+      <section class="stats">
+        <div class="stat">
+          <span class="stat-label">Total Value</span>
+          <span class="stat-value" id="stat-value">$0.00</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Cards</span>
+          <span class="stat-value" id="stat-count">0</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Unique</span>
+          <span class="stat-value" id="stat-unique">0</span>
+        </div>
+        <div class="stat grow"></div>
+        <button class="btn ghost" id="refresh-prices" title="Re-fetch market prices">
+          ↻ Refresh prices
+        </button>
+      </section>
+
+      <div class="toolbar">
+        <input id="collection-filter" class="filter-input" placeholder="Filter your collection…" />
+        <select id="collection-group" class="select">
+          <option value="none">Group: None</option>
+          <option value="set">Group: Set</option>
+          <option value="rarity">Group: Rarity</option>
+        </select>
+        <select id="collection-sort" class="select">
+          <option value="value">Sort: Value (high → low)</option>
+          <option value="name">Sort: Name (A → Z)</option>
+          <option value="recent">Sort: Recently added</option>
+          <option value="qty">Sort: Quantity</option>
+        </select>
+      </div>
+
+      <div id="collection-grid" class="grid"></div>
+      <div id="collection-empty" class="empty hidden">
+        <div class="empty-art">📦</div>
+        <h2>Your collection is empty</h2>
+        <p>Head to <strong>Add Cards</strong> to search by name or scan a card with your camera.</p>
+        <button class="btn primary" data-goto="add">Add your first card</button>
+      </div>
+    </main>
+
+    <!-- ADD / BROWSE VIEW -->
+    <main id="view-add" class="view">
+      <section class="search-hero">
+        <div class="search-row">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input id="search-input" placeholder="Search a Pokémon card or product… (e.g. Charizard, Pikachu 025/165)" autocomplete="off" />
+          </div>
+          <button class="btn camera" id="open-camera" title="Scan a card with your camera">
+            <span class="cam-icon">📷</span> Scan card
+          </button>
+        </div>
+        <p class="hint">Type to search, or tap <strong>Scan card</strong> and the app will read the card and match it automatically.</p>
+      </section>
+
+      <div id="search-status" class="search-status"></div>
+      <div id="search-grid" class="grid"></div>
+    </main>
+
+    <!-- WISHLIST VIEW -->
+    <main id="view-wishlist" class="view">
+      <section class="stats">
+        <div class="stat">
+          <span class="stat-label">Wishlist Value</span>
+          <span class="stat-value" id="wish-value">$0.00</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">Cards</span>
+          <span class="stat-value" id="wish-count">0</span>
+        </div>
+        <div class="stat grow"></div>
+        <button class="btn ghost" id="wish-refresh" title="Re-fetch market prices">↻ Refresh prices</button>
+      </section>
+
+      <div class="toolbar">
+        <input id="wish-filter" class="filter-input" placeholder="Filter your wishlist…" />
+        <select id="wish-sort" class="select">
+          <option value="price">Sort: Price (high → low)</option>
+          <option value="name">Sort: Name (A → Z)</option>
+          <option value="recent">Sort: Recently added</option>
+        </select>
+      </div>
+
+      <div id="wishlist-grid" class="grid"></div>
+      <div id="wishlist-empty" class="empty hidden">
+        <div class="empty-art">♡</div>
+        <h2>Your wishlist is empty</h2>
+        <p>Find cards in <strong>Add Cards</strong> and tap the heart to save them here.</p>
+        <button class="btn primary" data-goto="add">Browse cards</button>
+      </div>
+    </main>
+
+    <!-- DETAIL MODAL -->
+    <div id="detail-modal" class="modal hidden">
+      <div class="modal-backdrop" data-close></div>
+      <div class="modal-card detail">
+        <button class="modal-x" data-close>×</button>
+        <div id="detail-body" class="detail-body"></div>
+      </div>
+    </div>
+
+    <!-- CAMERA / SCAN MODAL -->
+    <div id="camera-modal" class="modal hidden">
+      <div class="modal-backdrop" data-close></div>
+      <div class="modal-card scan">
+        <button class="modal-x" data-close>×</button>
+        <h2>Scan a card</h2>
+        <p class="scan-sub">Line the card up inside the frame — it captures automatically when the card is steady and in focus. Or tap Capture / upload a photo.</p>
+
+        <div class="scan-stage">
+          <video id="cam-video" autoplay playsinline muted></video>
+          <canvas id="cam-canvas" class="hidden"></canvas>
+          <img id="scan-preview" class="hidden" alt="captured card" />
+          <div id="scan-guide" class="scan-guide">
+            <span class="corner tl"></span><span class="corner tr"></span>
+            <span class="corner bl"></span><span class="corner br"></span>
+            <div id="scan-ring" class="scan-ring"></div>
+          </div>
+          <div id="scan-hint" class="scan-hint hidden">Point at a card…</div>
+        </div>
+
+        <div class="scan-actions">
+          <button class="btn primary" id="capture-btn">📸 Capture</button>
+          <label class="auto-toggle" title="Capture automatically when a card is detected">
+            <input type="checkbox" id="auto-capture" checked />
+            <span>Auto</span>
+          </label>
+          <label class="btn ghost file-btn">
+            Upload photo
+            <input type="file" id="scan-file" accept="image/*" hidden />
+          </label>
+          <button class="btn ghost hidden" id="retake-btn">Retake</button>
+        </div>
+
+        <div id="scan-progress" class="scan-progress hidden">
+          <div class="spinner"></div>
+          <span id="scan-progress-text">Reading card…</span>
+        </div>
+
+        <div id="scan-results" class="scan-results"></div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <!-- Mobile bottom navigation -->
+    <nav class="bottom-nav">
+      <button class="bn-item active" data-view="collection">
+        <span class="bn-icon">🗂️</span><span class="bn-label">Collection</span>
+      </button>
+      <button class="bn-item bn-fab" data-view="add">
+        <span class="bn-icon">＋</span><span class="bn-label">Add</span>
+      </button>
+      <button class="bn-item" data-view="wishlist">
+        <span class="bn-icon">♡</span><span class="bn-label">Wishlist</span>
+      </button>
+    </nav>
+    </div><!-- /#app-root -->
+
+    <!-- Tesseract.js for on-device OCR card recognition -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <script src="config.js"></script>
+    <script src="app.js"></script>
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () =>
+          navigator.serviceWorker.register("/sw.js").catch(() => {})
+        );
+      }
+    </script>
+  </body>
+</html>
