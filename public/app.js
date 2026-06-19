@@ -10,6 +10,11 @@ const esc = (s) =>
 
 const CONDITIONS = ["Near Mint", "Lightly Played", "Moderately Played", "Heavily Played", "Damaged"];
 
+// Crisp mid-resolution card image for grid tiles. The stored 200x200 thumbnail
+// looks blurry on high-DPI phone screens; 500px is sharp without being huge.
+const cardImg = (id, size = 500) =>
+  `https://tcgplayer-cdn.tcgplayer.com/product/${id}_in_${size}x${size}.jpg`;
+
 // Base URL for the backend API. Empty = same origin (web). For the packaged
 // iOS/Android app, set window.EXALTED_API_BASE in config.js to the deployed URL.
 const API_BASE = (window.EXALTED_API_BASE || "").replace(/\/+$/, "");
@@ -248,8 +253,8 @@ function collectionCardHTML(i) {
   return `
     <div class="card" data-inv="${i.id}">
       <div class="card-img-wrap" data-detail="${i.productId}">
-        <img loading="lazy" src="${esc(i.image)}" alt="${esc(i.name)}"
-             onerror="this.style.opacity=.25" />
+        <img loading="lazy" decoding="async" src="${cardImg(i.productId)}" alt="${esc(i.name)}"
+             onerror="this.onerror=null;this.src='${esc(i.imageLarge || i.image)}'" />
         <span class="card-qty-badge">×${i.quantity}</span>
       </div>
       <div class="card-body" data-detail="${i.productId}">
@@ -467,8 +472,8 @@ function productCardHTML(p) {
   return `
     <div class="card" data-detail="${p.productId}">
       <div class="card-img-wrap">
-        <img loading="lazy" src="${esc(p.image)}" alt="${esc(p.name)}"
-             onerror="this.style.opacity=.25" />
+        <img loading="lazy" decoding="async" src="${cardImg(p.productId)}" alt="${esc(p.name)}"
+             onerror="this.onerror=null;this.src='${esc(p.imageLarge || p.image)}'" />
         ${owned ? `<span class="card-qty-badge">Owned ×${owned}</span>` : ""}
         ${isWished(p.productId) ? `<span class="heart-badge">♥</span>` : ""}
       </div>
@@ -729,27 +734,50 @@ function captureFromGuide() {
   return c.toDataURL("image/jpeg", 0.95);
 }
 
-// Simple edge-density check — tells us if something card-like is in frame.
-function edgeDensity() {
+// Analyze the guide region for a card that actually FILLS the frame.
+// Returns { density, coverage }:
+//   density  – overall fraction of edge pixels (busy-ness)
+//   coverage – fraction of a 3x3 grid of cells that are "busy". A card lined up
+//              inside the frame lights up all 9 cells; a small/partial card or a
+//              single busy spot on the background does not.
+function analyzeFrame() {
   const v = cam.video;
-  if (!v.videoWidth) return 0;
+  if (!v.videoWidth) return { density: 0, coverage: 0 };
   const g = guideRegion(v);
   dctx.drawImage(v, g.x, g.y, g.w, g.h, 0, 0, det.width, det.height);
   const { data } = dctx.getImageData(0, 0, det.width, det.height);
   const W = det.width;
   const H = det.height;
+
+  const cellEdges = new Array(9).fill(0);
+  const cellTotal = new Array(9).fill(0);
   let edges = 0;
   const total = (W - 2) * (H - 2);
+  const cw = W / 3;
+  const ch = H / 3;
+
   for (let y = 1; y < H - 1; y++) {
+    const cellRow = Math.min(2, Math.floor(y / ch));
     for (let x = 1; x < W - 1; x++) {
       const i = (y * W + x) * 4;
       const lum = (data[i] + data[i + 1] + data[i + 2]) / 3;
       const r = (data[i + 4] + data[i + 5] + data[i + 6]) / 3;
       const b = (data[i + W * 4] + data[i + W * 4 + 1] + data[i + W * 4 + 2]) / 3;
-      if (Math.abs(lum - r) + Math.abs(lum - b) > 28) edges++;
+      const cell = cellRow * 3 + Math.min(2, Math.floor(x / cw));
+      cellTotal[cell]++;
+      if (Math.abs(lum - r) + Math.abs(lum - b) > 28) {
+        edges++;
+        cellEdges[cell]++;
+      }
     }
   }
-  return edges / total;
+
+  // A cell counts as "busy" when a meaningful share of it has edges.
+  let busyCells = 0;
+  for (let c = 0; c < 9; c++) {
+    if (cellTotal[c] && cellEdges[c] / cellTotal[c] > 0.03) busyCells++;
+  }
+  return { density: edges / total, coverage: busyCells / 9 };
 }
 
 function setHint(text, good) {
@@ -766,18 +794,22 @@ function detLoop() {
   const elapsed = lastDetTick ? Math.min(now - lastDetTick, 300) : 110;
   lastDetTick = now;
 
-  const density = edgeDensity();
-  // A card in frame has lots of edges (text, border, artwork). Plain table/wall = low.
-  const cardPresent = density > 0.04;
+  const { density, coverage } = analyzeFrame();
+  // A card lined up in the frame is busy AND fills most of the guide. This
+  // rejects empty backgrounds (low density) and partial/far cards (low coverage).
+  const somethingThere = density > 0.04;
+  const cardFillsFrame = density > 0.05 && coverage >= 7 / 9;
 
   const guide = $("#scan-guide");
   const ring = $("#scan-ring");
   guide.classList.remove("detect", "locking");
 
-  if (!cardPresent) {
+  if (!cardFillsFrame) {
     cardVisibleMs = 0;
     ring.classList.remove("show");
-    setHint("Point at a card…", false);
+    // Distinguish "nothing here" from "card not fully in frame" so the user
+    // knows to move the card to fill the guide.
+    setHint(somethingThere ? "Fit the whole card in the frame…" : "Point at a card…", false);
   } else {
     cardVisibleMs += elapsed;
     const progress = Math.min(100, Math.round((cardVisibleMs / CARD_HOLD_MS) * 100));
