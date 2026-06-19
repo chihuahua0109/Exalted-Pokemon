@@ -664,8 +664,8 @@ async function migrateLegacy(userId) {
 app.post("/api/auth/register", async (req, res) => {
   const username = String(req.body?.username || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
-  if (!/^[a-z0-9_.]{3,20}$/.test(username)) {
-    return res.status(400).json({ error: "Username: 3–20 letters, numbers, _ or ." });
+  if (!/^[a-z0-9._%+@-]{3,254}$/.test(username)) {
+    return res.status(400).json({ error: "Use a username or email (letters, numbers, 3+ characters)." });
   }
   if (password.length < 6) {
     return res.status(400).json({ error: "Password must be at least 6 characters" });

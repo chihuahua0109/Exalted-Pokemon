@@ -1441,7 +1441,7 @@ $("#auth-form").addEventListener("submit", async (e) => {
     authError(err.message);
   } finally {
     btn.disabled = false;
-    setAuthMode(authMode);
+    btn.textContent = authMode === "login" ? "Log in" : "Create account";
   }
 });
 
