@@ -1,5 +1,5 @@
 ﻿import { readFileSync } from 'fs';
-const key = 'K85352191488957';
+const key = process.env.OCRSPACE_API_KEY || 'helloworld';
 const b64 = readFileSync('test/psyduck.png').toString('base64');
 const body = new URLSearchParams();
 body.set('base64Image','data:image/png;base64,'+b64);
