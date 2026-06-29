@@ -153,6 +153,7 @@ function switchView(name) {
   if (name === "add") setTimeout(() => $("#search-input").focus(), 50);
   if (name === "wishlist") renderWishlist();
   if (name === "collection") renderCollection();
+  if (name === "market") renderMarket();
   window.scrollTo({ top: 0 });
 }
 $$(".tab, .bn-item").forEach((t) =>
@@ -425,6 +426,194 @@ $("#wish-refresh").addEventListener("click", async (e) => {
     state.inventory = res.items;
     if (res.wishlist) state.wishlist = res.wishlist;
     renderWishlist();
+    toast(`Updated ${res.updated} price${res.updated === 1 ? "" : "s"}`);
+  } catch {
+    toast("Refresh failed");
+  }
+  e.target.disabled = false;
+  e.target.textContent = "↻ Refresh prices";
+});
+
+/* ---------------- Market check ----------------
+ * Client-side analytics over state.inventory:
+ *   - Headline portfolio value + total gain since cards were added
+ *   - Top "movers" (biggest absolute gain since added)
+ *   - Top holdings (largest line value)
+ *   - Set and rarity breakdowns (share of total value)
+ * Nothing is round-tripped to the server; everything is derived from data
+ * that's already loaded after sign-in.
+ */
+function pctDelta(now, then) {
+  if (!then) return null;
+  return ((now - then) / then) * 100;
+}
+
+function marketRowHTML(item, options = {}) {
+  const lineVal = (item.marketPrice || 0) * item.quantity;
+  const delta = options.showDelta && item.addedPrice != null
+    ? (item.marketPrice || 0) - item.addedPrice
+    : null;
+  const pct = delta != null ? pctDelta(item.marketPrice || 0, item.addedPrice) : null;
+  const cls = delta == null ? "" : delta >= 0 ? "up" : "down";
+  const arrow = delta == null ? "" : delta >= 0 ? "▲" : "▼";
+  const right = options.showDelta && delta != null
+    ? `<div class="mkt-right ${cls}">
+         <div class="mkt-delta">${arrow} ${money(Math.abs(delta))}</div>
+         <div class="mkt-pct">${pct != null ? `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%` : ""}</div>
+       </div>`
+    : `<div class="mkt-right">
+         <div class="mkt-delta">${money(lineVal)}</div>
+         <div class="mkt-pct muted">${money(item.marketPrice)} × ${item.quantity}</div>
+       </div>`;
+  return `
+    <div class="mkt-row" data-detail="${item.productId}">
+      <img loading="lazy" decoding="async" src="${cardImg(item.productId, 200)}"
+           alt="${esc(item.name)}"
+           onerror="this.onerror=null;this.src='${esc(item.image)}'" />
+      <div class="mkt-info">
+        <div class="mkt-name">${esc(item.name)}</div>
+        <div class="mkt-meta">${esc(item.set || "")}${item.number ? " · #" + esc(item.number) : ""}</div>
+      </div>
+      ${right}
+    </div>`;
+}
+
+function marketBarsHTML(buckets) {
+  const max = Math.max(...buckets.map((b) => b.value), 1);
+  return buckets
+    .map((b) => {
+      const pct = (b.value / max) * 100;
+      const share = ((b.value / (buckets.reduce((s, x) => s + x.value, 0) || 1)) * 100).toFixed(1);
+      return `
+        <div class="mkt-bar-row">
+          <div class="mkt-bar-head">
+            <span class="mkt-bar-name" title="${esc(b.name)}">${esc(b.name)}</span>
+            <span class="mkt-bar-val">${money(b.value)} <span class="muted">· ${share}%</span></span>
+          </div>
+          <div class="mkt-bar-track"><div class="mkt-bar-fill" style="width:${pct.toFixed(1)}%"></div></div>
+          <div class="mkt-bar-foot muted">${b.count} card${b.count === 1 ? "" : "s"}</div>
+        </div>`;
+    })
+    .join("");
+}
+
+function renderMarket() {
+  const items = state.inventory;
+  const empty = $("#market-empty");
+  const body = $("#market-body");
+  empty.classList.toggle("hidden", items.length > 0);
+  body.classList.toggle("hidden", items.length === 0);
+
+  const totalValue = items.reduce((s, i) => s + (i.marketPrice || 0) * i.quantity, 0);
+  const totalSpent = items.reduce(
+    (s, i) => s + (i.addedPrice != null ? i.addedPrice : i.marketPrice || 0) * i.quantity, 0
+  );
+  const totalCount = items.reduce((s, i) => s + i.quantity, 0);
+  const unique = new Set(items.map((i) => i.productId)).size;
+  const avg = unique ? totalValue / unique : 0;
+  const gain = totalValue - totalSpent;
+  const gainPct = totalSpent ? (gain / totalSpent) * 100 : null;
+
+  $("#market-total").textContent = money(totalValue);
+  $("#market-count").textContent = totalCount;
+  $("#market-unique").textContent = unique;
+  $("#market-avg").textContent = money(avg);
+  $("#market-spent").textContent = money(totalSpent);
+
+  const change = $("#market-change");
+  if (gainPct == null || items.length === 0) {
+    change.className = "market-change";
+    change.textContent = items.length === 0 ? "Add cards to start tracking" : "—";
+  } else {
+    const up = gain >= 0;
+    change.className = `market-change ${up ? "up" : "down"}`;
+    change.textContent = `${up ? "▲" : "▼"} ${money(Math.abs(gain))} (${up ? "+" : ""}${gainPct.toFixed(1)}%) since added`;
+  }
+
+  if (!items.length) {
+    $("#market-movers").innerHTML = "";
+    $("#market-top").innerHTML = "";
+    $("#market-bysets").innerHTML = "";
+    $("#market-byrarity").innerHTML = "";
+    $("#market-updated").textContent = "";
+    return;
+  }
+
+  // Top movers — biggest absolute change since added.
+  const movers = items
+    .filter((i) => i.addedPrice != null && i.marketPrice != null && i.addedPrice !== i.marketPrice)
+    .map((i) => ({ i, delta: Math.abs((i.marketPrice || 0) - i.addedPrice) }))
+    .sort((a, b) => b.delta - a.delta)
+    .slice(0, 5)
+    .map((x) => x.i);
+  const moversBox = $("#market-movers");
+  if (movers.length) {
+    moversBox.innerHTML = movers.map((i) => marketRowHTML(i, { showDelta: true })).join("");
+    $("#market-movers-sub").textContent = "Biggest price changes since you added them";
+  } else {
+    moversBox.innerHTML = `<div class="muted small">No price changes yet — tap <b>Refresh prices</b> to fetch the latest from TCGplayer.</div>`;
+    $("#market-movers-sub").textContent = "";
+  }
+
+  // Top holdings by line value.
+  const top = [...items]
+    .sort((a, b) => (b.marketPrice || 0) * b.quantity - (a.marketPrice || 0) * a.quantity)
+    .slice(0, 5);
+  $("#market-top").innerHTML = top.map((i) => marketRowHTML(i)).join("");
+
+  // By set.
+  const sets = new Map();
+  for (const i of items) {
+    const key = i.set || "Unknown set";
+    const cur = sets.get(key) || { name: key, value: 0, count: 0 };
+    cur.value += (i.marketPrice || 0) * i.quantity;
+    cur.count += i.quantity;
+    sets.set(key, cur);
+  }
+  const setBuckets = [...sets.values()].sort((a, b) => b.value - a.value);
+  $("#market-bysets").innerHTML = marketBarsHTML(setBuckets);
+  $("#market-bysets-sub").textContent = `${setBuckets.length} set${setBuckets.length === 1 ? "" : "s"}`;
+
+  // By rarity.
+  const rarities = new Map();
+  for (const i of items) {
+    const key = i.rarity || "Unknown";
+    const cur = rarities.get(key) || { name: key, value: 0, count: 0 };
+    cur.value += (i.marketPrice || 0) * i.quantity;
+    cur.count += i.quantity;
+    rarities.set(key, cur);
+  }
+  const rarityBuckets = [...rarities.values()].sort((a, b) => b.value - a.value);
+  $("#market-byrarity").innerHTML = marketBarsHTML(rarityBuckets);
+  $("#market-byrarity-sub").textContent = `${rarityBuckets.length} rarit${rarityBuckets.length === 1 ? "y" : "ies"}`;
+
+  const lastUpdated = items
+    .map((i) => i.updatedAt)
+    .filter(Boolean)
+    .sort()
+    .pop();
+  if (lastUpdated) {
+    const d = new Date(lastUpdated);
+    $("#market-updated").textContent = `Prices last refreshed ${d.toLocaleString()}`;
+  } else {
+    $("#market-updated").textContent = "";
+  }
+}
+
+$("#market-body").addEventListener("click", (e) => {
+  const detail = e.target.closest("[data-detail]");
+  if (detail) openDetailById(Number(detail.dataset.detail));
+});
+
+$("#market-refresh").addEventListener("click", async (e) => {
+  if (!state.inventory.length) return toast("Nothing to refresh");
+  e.target.disabled = true;
+  e.target.textContent = "↻ Refreshing…";
+  try {
+    const res = await api.refresh();
+    state.inventory = res.items;
+    if (res.wishlist) state.wishlist = res.wishlist;
+    renderMarket();
     toast(`Updated ${res.updated} price${res.updated === 1 ? "" : "s"}`);
   } catch {
     toast("Refresh failed");

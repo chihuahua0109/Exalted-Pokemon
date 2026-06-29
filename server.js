@@ -348,10 +348,16 @@ function parseCardText(text) {
     cands.push({ text: l, score });
   });
   cands.sort((a, b) => b.score - a.score);
-  const name = (cands[0]?.text || "")
+  let name = (cands[0]?.text || "")
     .replace(/[^A-Za-z0-9'’.\- ]/g, "")
     .replace(/\s+/g, " ")
     .trim();
+  // OCR often glues the suffix onto the name (e.g. "Pikachuex", "CharizardVMAX").
+  // Re-introduce the space so the TCGplayer search matches the printed form.
+  name = name.replace(
+    /([a-z])(ex|EX|GX|V|VMAX|VSTAR|VUNION)\b/,
+    (_, base, suf) => `${base} ${suf.toLowerCase() === "ex" ? "ex" : suf.toUpperCase()}`
+  );
   return { name, number, hp };
 }
 
@@ -464,6 +470,11 @@ function scoreProduct(p, parsed) {
     else if (pn.split("/")[0].replace(/^0+/, "") === num.split("/")[0].replace(/^0+/, "")) s += 40;
   }
   s += nameSim(parsed.name, p.name) * 40;
+  // Substring boost — OCR often drops a trailing letter (e.g. "Charizar" instead
+  // of "Charizard"); this still finds the right product.
+  const np = normName(parsed.name);
+  const pp = normName(p.name);
+  if (np && pp && np.length >= 4 && (pp.includes(np) || np.includes(pp))) s += 25;
   if (parsed.set && p.set) s += nameSim(parsed.set, p.set) * 20;
   // HP is the strongest signal when no collector number was read.
   if (parsed.hp && p.attributes) {
@@ -525,24 +536,25 @@ app.post("/api/scan", async (req, res) => {
     }
 
     let products = [];
-    if (parsed.name) {
-      const attempts = [];
-      if (parsed.number) attempts.push(`${parsed.name} ${parsed.number}`);
-      if (parsed.set) attempts.push(`${parsed.name} ${parsed.set}`);
-      attempts.push(parsed.name);
+    const attempts = [];
+    if (parsed.name && parsed.number) attempts.push(`${parsed.name} ${parsed.number}`);
+    if (parsed.name && parsed.set) attempts.push(`${parsed.name} ${parsed.set}`);
+    if (parsed.name) attempts.push(parsed.name);
+    // Name was unreadable but we got a collector number — search by number alone.
+    // TCGplayer indexes the printed number, so "39/217" will surface candidates.
+    if (!parsed.name && parsed.number) attempts.push(parsed.number);
 
-      for (const q of attempts) {
-        // TCGplayer caps page size around 24 — larger values return HTTP 400.
-        ({ products } = await tcgSearch(q, { size: 24 }));
-        // For a name-only query, pull a second page so rarer printings are included.
-        if (!parsed.number) {
-          try {
-            const page2 = await tcgSearch(q, { from: 24, size: 24 });
-            if (page2.products?.length) products = products.concat(page2.products);
-          } catch { /* page 2 optional */ }
-        }
-        if (products.length) break;
+    for (const q of attempts) {
+      // TCGplayer caps page size around 24 — larger values return HTTP 400.
+      ({ products } = await tcgSearch(q, { size: 24 }));
+      // For a name-only query, pull a second page so rarer printings are included.
+      if (!parsed.number) {
+        try {
+          const page2 = await tcgSearch(q, { from: 24, size: 24 });
+          if (page2.products?.length) products = products.concat(page2.products);
+        } catch { /* page 2 optional */ }
       }
+      if (products.length) break;
     }
     const ranked = rankProducts(products, parsed);
     res.json({ ...parsed, source, text, rateLimited, products: ranked.products, confidence: ranked.confidence });

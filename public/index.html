@@ -59,6 +59,7 @@
       </div>
       <nav class="tabs">
         <button class="tab active" data-view="collection">My Collection</button>
+        <button class="tab" data-view="market">Market</button>
         <button class="tab" data-view="add">Add Cards</button>
         <button class="tab" data-view="wishlist">Wishlist</button>
       </nav>
@@ -181,6 +182,56 @@
       </div>
     </main>
 
+    <!-- MARKET VIEW -->
+    <main id="view-market" class="view">
+      <section class="market-hero">
+        <div class="market-headline">
+          <span class="market-eyebrow">Portfolio value</span>
+          <div class="market-total" id="market-total">$0.00</div>
+          <div class="market-change" id="market-change">—</div>
+        </div>
+        <button class="btn primary" id="market-refresh" title="Re-fetch market prices">↻ Refresh prices</button>
+      </section>
+
+      <div class="market-kpis">
+        <div class="kpi"><span class="kpi-label">Cards</span><span class="kpi-value" id="market-count">0</span></div>
+        <div class="kpi"><span class="kpi-label">Unique</span><span class="kpi-value" id="market-unique">0</span></div>
+        <div class="kpi"><span class="kpi-label">Avg / unique</span><span class="kpi-value" id="market-avg">$0.00</span></div>
+        <div class="kpi"><span class="kpi-label">Spent</span><span class="kpi-value" id="market-spent">$0.00</span></div>
+      </div>
+
+      <div id="market-empty" class="empty hidden">
+        <div class="empty-art">📈</div>
+        <h2>No market data yet</h2>
+        <p>Add cards to your <strong>Collection</strong> and the market breakdown will appear here.</p>
+        <button class="btn primary" data-goto="add">Add your first card</button>
+      </div>
+
+      <div id="market-body">
+        <section class="market-section">
+          <div class="market-section-head"><h3>📈 Top movers</h3><span class="muted" id="market-movers-sub">Cards that have changed the most since you added them</span></div>
+          <div id="market-movers" class="market-list"></div>
+        </section>
+
+        <section class="market-section">
+          <div class="market-section-head"><h3>💎 Most valuable</h3><span class="muted">Your top holdings by total line value</span></div>
+          <div id="market-top" class="market-list"></div>
+        </section>
+
+        <section class="market-section">
+          <div class="market-section-head"><h3>🗂️ By set</h3><span class="muted" id="market-bysets-sub"></span></div>
+          <div id="market-bysets" class="market-bars"></div>
+        </section>
+
+        <section class="market-section">
+          <div class="market-section-head"><h3>✨ By rarity</h3><span class="muted" id="market-byrarity-sub"></span></div>
+          <div id="market-byrarity" class="market-bars"></div>
+        </section>
+
+        <p class="muted market-updated" id="market-updated"></p>
+      </div>
+    </main>
+
     <!-- DETAIL MODAL -->
     <div id="detail-modal" class="modal hidden">
       <div class="modal-backdrop" data-close></div>
@@ -238,6 +289,9 @@
     <nav class="bottom-nav">
       <button class="bn-item active" data-view="collection">
         <span class="bn-icon">🗂️</span><span class="bn-label">Collection</span>
+      </button>
+      <button class="bn-item" data-view="market">
+        <span class="bn-icon">📈</span><span class="bn-label">Market</span>
       </button>
       <button class="bn-item bn-fab" data-view="add">
         <span class="bn-icon">＋</span><span class="bn-label">Add</span>

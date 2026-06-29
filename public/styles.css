@@ -433,6 +433,71 @@ body {
 }
 .bn-item.bn-fab.active .bn-icon { transform: scale(1.05); }
 
+/* Market view */
+.market-hero {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  background: linear-gradient(135deg, rgba(255,210,63,0.08), rgba(79,140,255,0.06));
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 22px 22px; margin-bottom: 16px; flex-wrap: wrap;
+}
+.market-headline { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.market-eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); }
+.market-total { font-size: 38px; font-weight: 800; color: var(--green); line-height: 1.1; }
+.market-change { font-size: 14px; font-weight: 700; color: var(--muted); }
+.market-change.up { color: var(--green); }
+.market-change.down { color: var(--red); }
+
+.market-kpis {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 22px;
+}
+.kpi {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 4px;
+}
+.kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+.kpi-value { font-size: 22px; font-weight: 800; }
+
+.market-section {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px 18px; margin-bottom: 16px;
+}
+.market-section-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.market-section-head h3 { margin: 0; font-size: 16px; font-weight: 700; }
+.market-section-head .muted { font-size: 12px; color: var(--muted); }
+
+.market-list { display: flex; flex-direction: column; gap: 4px; }
+.mkt-row {
+  display: grid; grid-template-columns: 48px 1fr auto; gap: 12px; align-items: center;
+  padding: 10px 8px; border-radius: 12px; cursor: pointer; transition: background 0.15s;
+}
+.mkt-row:hover { background: var(--panel-2); }
+.mkt-row img { width: 48px; height: 66px; object-fit: cover; border-radius: 6px; background: var(--bg-2); }
+.mkt-info { min-width: 0; }
+.mkt-name { font-weight: 700; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mkt-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.mkt-right { text-align: right; font-size: 13px; line-height: 1.3; }
+.mkt-delta { font-weight: 700; }
+.mkt-pct { font-size: 12px; color: var(--muted); }
+.mkt-right.up .mkt-delta, .mkt-right.up .mkt-pct { color: var(--green); }
+.mkt-right.down .mkt-delta, .mkt-right.down .mkt-pct { color: var(--red); }
+
+.market-bars { display: flex; flex-direction: column; gap: 14px; }
+.mkt-bar-head { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; margin-bottom: 5px; }
+.mkt-bar-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70%; }
+.mkt-bar-val { font-weight: 700; }
+.mkt-bar-track { height: 8px; background: var(--bg-2); border-radius: 999px; overflow: hidden; }
+.mkt-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.mkt-bar-foot { font-size: 11px; margin-top: 3px; }
+
+.market-updated { text-align: center; font-size: 12px; margin: 18px 0 0; }
+.small { font-size: 13px; }
+.muted { color: var(--muted); }
+
 .hidden { display: none !important; }
 .skeleton { background: linear-gradient(90deg, var(--panel) 25%, var(--panel-2) 50%, var(--panel) 75%); background-size: 200% 100%; animation: sk 1.2s infinite; border-radius: var(--radius); aspect-ratio: 367/560; }
 @keyframes sk { to { background-position: -200% 0; } }
@@ -443,6 +508,14 @@ body {
   .detail-img img { max-width: 100%; max-height: 34vh; width: auto; margin: 0 auto; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
   .brand h1 { font-size: 17px; }
+  .market-kpis { grid-template-columns: repeat(2, 1fr); }
+  .market-total { font-size: 30px; }
+  .kpi-value { font-size: 18px; }
+  .market-hero { padding: 18px; }
+  .mkt-row { grid-template-columns: 42px 1fr auto; gap: 10px; }
+  .mkt-row img { width: 42px; height: 58px; }
+  .bn-label { font-size: 10px; }
+  .bn-icon { font-size: 19px; }
 }
 
 /* Mobile app chrome: bottom nav replaces top tabs */
