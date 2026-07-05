@@ -101,6 +101,7 @@
           <span class="stat-value" id="stat-unique">0</span>
         </div>
         <div class="stat grow"></div>
+        <button class="btn ghost" id="export-csv" title="Download your collection as a spreadsheet">⬇ Export CSV</button>
         <button class="btn ghost" id="refresh-prices" title="Re-fetch market prices">
           ↻ Refresh prices
         </button>
@@ -147,6 +148,9 @@
 
       <div id="search-status" class="search-status"></div>
       <div id="search-grid" class="grid"></div>
+      <div class="load-more-wrap">
+        <button class="btn ghost hidden" id="search-more">Load more results</button>
+      </div>
     </main>
 
     <!-- WISHLIST VIEW -->
@@ -284,6 +288,15 @@
     </div>
 
     <div id="toast" class="toast hidden"></div>
+
+    <!-- iOS install hint (shown once on iPhone/iPad Safari when not installed) -->
+    <div id="ios-install-banner" class="ios-banner hidden">
+      <div class="ios-banner-text">
+        <b>Get the app on your iPhone</b>
+        <span>Tap <span class="share-glyph">⬆</span> Share, then “Add to Home Screen”</span>
+      </div>
+      <button class="ios-banner-x" id="ios-banner-close">×</button>
+    </div>
 
     <!-- Mobile bottom navigation -->
     <nav class="bottom-nav">

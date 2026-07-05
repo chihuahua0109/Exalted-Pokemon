@@ -318,6 +318,31 @@ async function changeQty(id, delta) {
   renderCollection();
 }
 
+$("#export-csv").addEventListener("click", () => {
+  if (!state.inventory.length) return toast("Nothing to export");
+  const csvCell = (v) => {
+    const s = String(v ?? "");
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const header = ["Name", "Set", "Number", "Rarity", "Condition", "Quantity", "Market Price", "Line Value", "Price When Added", "Added At", "TCGplayer URL"];
+  const rows = state.inventory.map((i) => [
+    i.name, i.set || "", i.number || "", i.rarity || "", i.condition, i.quantity,
+    i.marketPrice ?? "", i.marketPrice != null ? (i.marketPrice * i.quantity).toFixed(2) : "",
+    i.addedPrice ?? "", i.addedAt || "", i.url || "",
+  ]);
+  const totalValue = state.inventory.reduce((s, i) => s + (i.marketPrice || 0) * i.quantity, 0);
+  rows.push([]);
+  rows.push(["TOTAL", "", "", "", "", state.inventory.reduce((s, i) => s + i.quantity, 0), "", totalValue.toFixed(2), "", "", ""]);
+  const csv = [header, ...rows].map((r) => r.map(csvCell).join(",")).join("\r\n");
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `exalted-collection-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast("Collection exported");
+});
+
 $("#refresh-prices").addEventListener("click", async (e) => {
   if (!state.inventory.length) return toast("Nothing to refresh");
   e.target.disabled = true;
@@ -366,7 +391,8 @@ function renderWishlist() {
       (i) => `
     <div class="card">
       <div class="card-img-wrap" data-detail="${i.productId}">
-        <img loading="lazy" src="${esc(i.image)}" alt="${esc(i.name)}" onerror="this.style.opacity=.25" />
+        <img loading="lazy" decoding="async" src="${cardImg(i.productId)}" alt="${esc(i.name)}"
+             onerror="this.onerror=null;this.src='${esc(i.imageLarge || i.image)}'" />
         ${ownedQty(i.productId) ? `<span class="card-qty-badge">Owned ×${ownedQty(i.productId)}</span>` : ""}
       </div>
       <div class="card-body" data-detail="${i.productId}">
@@ -635,26 +661,59 @@ searchInput.addEventListener("input", () => {
   }
   searchTimer = setTimeout(() => runSearch(q), 300);
 });
+searchInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    clearTimeout(searchTimer);
+    const q = searchInput.value.trim();
+    if (q.length >= 2) runSearch(q);
+    searchInput.blur(); // dismiss the phone keyboard so results are visible
+  }
+});
 
 function skeletons(n = 8) {
   return Array.from({ length: n }, () => `<div class="skeleton"></div>`).join("");
 }
 
-async function runSearch(q) {
-  $("#search-status").textContent = `Searching “${q}”…`;
-  $("#search-grid").innerHTML = skeletons();
+let searchPage = 0;
+let searchQuery = "";
+let searchTotal = 0;
+
+async function runSearch(q, page = 0) {
+  const append = page > 0;
+  if (!append) {
+    $("#search-status").textContent = `Searching “${q}”…`;
+    $("#search-grid").innerHTML = skeletons();
+    $("#search-more").classList.add("hidden");
+  } else {
+    $("#search-more").disabled = true;
+    $("#search-more").textContent = "Loading…";
+  }
   try {
-    const { products, total } = await api.search(q);
-    state.searchResults = products;
-    $("#search-status").textContent = products.length
-      ? `${total.toLocaleString()} result${total === 1 ? "" : "s"} for “${q}”`
+    const { products, total } = await api.search(q, page);
+    searchQuery = q;
+    searchPage = page;
+    searchTotal = total;
+    state.searchResults = append ? state.searchResults.concat(products) : products;
+    $("#search-status").textContent = state.searchResults.length
+      ? `Showing ${state.searchResults.length} of ${total.toLocaleString()} result${total === 1 ? "" : "s"} for “${q}”`
       : `No results for “${q}”`;
-    renderSearchGrid(products);
+    renderSearchGrid(state.searchResults);
+    const more = $("#search-more");
+    more.classList.toggle("hidden", state.searchResults.length >= total || !products.length);
+    more.disabled = false;
+    more.textContent = "Load more results";
   } catch {
-    $("#search-status").textContent = "Search failed — is the server running?";
-    $("#search-grid").innerHTML = "";
+    if (!append) {
+      $("#search-status").textContent = "Search failed — is the server running?";
+      $("#search-grid").innerHTML = "";
+    } else {
+      $("#search-more").disabled = false;
+      $("#search-more").textContent = "Load more results";
+    }
   }
 }
+
+$("#search-more").addEventListener("click", () => runSearch(searchQuery, searchPage + 1));
 
 function productCardHTML(p) {
   const owned = ownedQty(p.productId);
@@ -1544,6 +1603,16 @@ window.addEventListener("appinstalled", () => {
   installBtn.classList.add("hidden");
   deferredPrompt = null;
   toast("Installed! Find Exalted on your home screen.");
+});
+
+// One-time hint banner for iPhone/iPad Safari users (the platform with no
+// native install prompt). Dismissable; never shown again once closed or installed.
+if (isIOS && !isStandalone && !localStorage.getItem("iosBannerDismissed")) {
+  setTimeout(() => $("#ios-install-banner")?.classList.remove("hidden"), 2500);
+}
+$("#ios-banner-close")?.addEventListener("click", () => {
+  $("#ios-install-banner").classList.add("hidden");
+  localStorage.setItem("iosBannerDismissed", "1");
 });
 
 installBtn.addEventListener("click", async () => {
