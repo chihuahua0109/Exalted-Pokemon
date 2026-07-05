@@ -24,6 +24,10 @@ services:
       # Set this in the Render dashboard (your OCR.space key) — keep it secret.
       - key: OCRSPACE_API_KEY
         sync: false
+      # MongoDB Atlas connection string (free tier). With this set, accounts,
+      # logins, and collections persist across restarts and sync across devices.
+      - key: MONGODB_URI
+        sync: false
 # --- To persist data on a PAID instance, change plan above to "starter" and
 # --- uncomment the lines below:
 #     envVars:

@@ -133,6 +133,25 @@ The included blueprint mounts a persistent disk at `/data` (via `DATA_DIR`) so
 accounts/inventory survive restarts. (Disks need a paid Render instance; on the
 free tier data is wiped on each spin-down.)
 
+### Persistent accounts & collections on the free tier (MongoDB Atlas)
+
+The free Render tier wipes its filesystem when the instance sleeps, which logs
+everyone out and deletes collections. Fix it with a free MongoDB Atlas database:
+
+1. Create a free account at [mongodb.com/cloud/atlas](https://www.mongodb.com/cloud/atlas/register)
+   (no credit card) and create a **Free (M0)** cluster.
+2. Under **Database Access**, add a database user (username + password).
+3. Under **Network Access**, add IP `0.0.0.0/0` (allow from anywhere — Render's
+   IPs rotate).
+4. Click **Connect → Drivers** and copy the connection string, e.g.
+   `mongodb+srv://USER:PASSWORD@cluster0.xxxxx.mongodb.net/`.
+5. In the Render dashboard → your service → **Environment**, add
+   `MONGODB_URI` with that string. Render redeploys automatically.
+
+With `MONGODB_URI` set the server stores users, sessions, and collections in
+Atlas — logins survive restarts and the same account works from any device.
+Without it, the server falls back to local JSON files (fine for local dev).
+
 ### 2. Point the app at the backend
 
 Edit `public/config.js` and set your deployed URL:

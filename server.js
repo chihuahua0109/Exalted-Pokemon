@@ -564,7 +564,11 @@ app.post("/api/scan", async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ *
- * Inventory store (flat JSON file)
+ * Persistence — two backends behind the same functions:
+ *   1. MongoDB (set MONGODB_URI) — survives restarts/redeploys; required
+ *      for real persistence on cloud hosts with ephemeral filesystems
+ *      (e.g. Render free tier). MongoDB Atlas free tier works great.
+ *   2. Flat JSON files under DATA_DIR — local dev fallback.
  * ------------------------------------------------------------------ */
 
 // DATA_DIR can point at a mounted persistent disk on a cloud host so user
@@ -575,31 +579,85 @@ const USERS_FILE = join(DATA_DIR, "users.json");
 const SESSIONS_FILE = join(DATA_DIR, "sessions.json");
 const USER_DATA_DIR = join(DATA_DIR, "users");
 
+let mongo = null; // { users, sessions, userdata } collections when connected
+if (process.env.MONGODB_URI) {
+  try {
+    const { MongoClient } = await import("mongodb");
+    const client = new MongoClient(process.env.MONGODB_URI, {
+      serverSelectionTimeoutMS: 10000,
+    });
+    await client.connect();
+    const mdb = client.db(process.env.MONGODB_DB || "exalted");
+    mongo = {
+      users: mdb.collection("users"),
+      sessions: mdb.collection("sessions"),
+      userdata: mdb.collection("userdata"),
+    };
+    await mongo.users.createIndex({ username: 1 }, { unique: true }).catch(() => {});
+    await mongo.sessions.createIndex({ token: 1 }, { unique: true }).catch(() => {});
+    await mongo.userdata.createIndex({ userId: 1 }, { unique: true }).catch(() => {});
+    console.log("  🗄  MongoDB connected — accounts & collections persist");
+  } catch (err) {
+    console.error(`  ⚠ MongoDB connection failed (${err.message}); using file storage`);
+    mongo = null;
+  }
+}
+
 /* ------------------------------------------------------------------ *
  * Authentication: local accounts, scrypt-hashed passwords, bearer
- * tokens. Sessions persist to disk so users stay logged in across
- * server restarts. Each user has their own inventory/wishlist file.
+ * tokens. Sessions persist so users stay logged in across restarts.
  * ------------------------------------------------------------------ */
 
 async function loadUsers() {
+  if (mongo) return mongo.users.find({}, { projection: { _id: 0 } }).toArray();
   try {
     return JSON.parse(await readFile(USERS_FILE, "utf8"));
   } catch {
     return [];
   }
 }
-async function saveUsers(users) {
+async function addUser(user) {
+  if (mongo) {
+    await mongo.users.insertOne({ ...user });
+    return;
+  }
+  const users = await loadUsers();
+  users.push(user);
   await mkdir(DATA_DIR, { recursive: true });
   await writeFile(USERS_FILE, JSON.stringify(users, null, 2));
 }
 
+// In-memory session cache, backed by Mongo or a JSON file. Tokens have no
+// expiry — "stay logged in" is the point for a personal collection app.
 let sessions = {};
-try {
-  sessions = JSON.parse(readFileSync(SESSIONS_FILE, "utf8"));
-} catch {
-  sessions = {};
+if (mongo) {
+  for (const s of await mongo.sessions.find().toArray()) {
+    sessions[s.token] = { userId: s.userId, createdAt: s.createdAt };
+  }
+} else {
+  try {
+    sessions = JSON.parse(readFileSync(SESSIONS_FILE, "utf8"));
+  } catch {
+    sessions = {};
+  }
 }
-function persistSessions() {
+function addSession(token, userId) {
+  sessions[token] = { userId, createdAt: Date.now() };
+  if (mongo) {
+    mongo.sessions.insertOne({ token, userId, createdAt: Date.now() }).catch(() => {});
+  } else {
+    persistSessionsFile();
+  }
+}
+function removeSession(token) {
+  delete sessions[token];
+  if (mongo) {
+    mongo.sessions.deleteOne({ token }).catch(() => {});
+  } else {
+    persistSessionsFile();
+  }
+}
+function persistSessionsFile() {
   try {
     mkdirSync(DATA_DIR, { recursive: true });
     writeFileSync(SESSIONS_FILE, JSON.stringify(sessions));
@@ -642,16 +700,28 @@ const userDbFile = (userId) => join(USER_DATA_DIR, `${userId}.json`);
 
 async function loadDb(userId) {
   let db;
-  try {
-    db = JSON.parse(await readFile(userDbFile(userId), "utf8"));
-  } catch {
-    db = {};
+  if (mongo) {
+    db = (await mongo.userdata.findOne({ userId }, { projection: { _id: 0 } })) || {};
+  } else {
+    try {
+      db = JSON.parse(await readFile(userDbFile(userId), "utf8"));
+    } catch {
+      db = {};
+    }
   }
   if (!Array.isArray(db.items)) db.items = [];
   if (!Array.isArray(db.wishlist)) db.wishlist = [];
   return db;
 }
 async function saveDb(userId, db) {
+  if (mongo) {
+    await mongo.userdata.updateOne(
+      { userId },
+      { $set: { userId, items: db.items, wishlist: db.wishlist } },
+      { upsert: true }
+    );
+    return;
+  }
   await mkdir(USER_DATA_DIR, { recursive: true });
   await writeFile(userDbFile(userId), JSON.stringify(db, null, 2));
 }
@@ -689,12 +759,10 @@ app.post("/api/auth/register", async (req, res) => {
   const { salt, hash } = hashPassword(password);
   const user = { id: randomUUID(), username, salt, hash, createdAt: new Date().toISOString() };
   const firstUser = users.length === 0;
-  users.push(user);
-  await saveUsers(users);
+  await addUser(user);
   if (firstUser) await migrateLegacy(user.id);
   const token = newToken();
-  sessions[token] = { userId: user.id, createdAt: Date.now() };
-  persistSessions();
+  addSession(token, user.id);
   res.json({ token, username: user.username });
 });
 
@@ -707,17 +775,13 @@ app.post("/api/auth/login", async (req, res) => {
     return res.status(401).json({ error: "Invalid username or password" });
   }
   const token = newToken();
-  sessions[token] = { userId: user.id, createdAt: Date.now() };
-  persistSessions();
+  addSession(token, user.id);
   res.json({ token, username: user.username });
 });
 
 app.post("/api/auth/logout", (req, res) => {
   const t = tokenFrom(req);
-  if (t) {
-    delete sessions[t];
-    persistSessions();
-  }
+  if (t) removeSession(t);
   res.json({ ok: true });
 });
 
