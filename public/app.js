@@ -1163,6 +1163,7 @@ function stopCamera() {
 function resetScanUI() {
   cam.preview.classList.add("hidden");
   cam.video.classList.remove("hidden");
+  document.querySelector(".scan-stage")?.classList.remove("captured");
   $("#capture-btn").classList.remove("hidden");
   $("#retake-btn").classList.add("hidden");
   $("#scan-progress").classList.add("hidden");
@@ -1201,6 +1202,12 @@ function showCaptured(url) {
   $("#scan-hint").classList.add("hidden");
   $("#capture-btn").classList.add("hidden");
   $("#retake-btn").classList.remove("hidden");
+  document.querySelector(".scan-stage")?.classList.add("captured");
+  // The modal content changes height here (buttons swap + progress appears),
+  // which nudges the scroll position on iOS. Pin back to the top so the
+  // captured card stays fully in view.
+  const modal = document.querySelector(".modal-card.scan");
+  if (modal) requestAnimationFrame(() => modal.scrollTo({ top: 0, behavior: "smooth" }));
 }
 
 // Card boilerplate that should never be treated as the card name.
@@ -1560,6 +1567,14 @@ function renderScanResults(parsed, products, query, meta = {}) {
       openDetailById(Number(el.dataset.scan));
     })
   );
+
+  // Bring the results into view once they exist (they render below the tall
+  // capture preview, otherwise the user has to notice and scroll manually).
+  if (products.length || parsed.name) {
+    requestAnimationFrame(() =>
+      box.scrollIntoView({ behavior: "smooth", block: "nearest" })
+    );
+  }
 }
 
 async function reSearchScan() {
