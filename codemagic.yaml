@@ -23,7 +23,7 @@ workflows:
         XCODE_SCHEME: "App"
         # Numeric Apple ID of the app record in App Store Connect (App Information
         # > General > Apple ID). Needed to auto-increment the build number.
-        APP_STORE_APP_ID: "0000000000"
+        APP_STORE_APP_ID: "6790096844"
       node: 20.12.2
       xcode: latest
       cocoapods: default
