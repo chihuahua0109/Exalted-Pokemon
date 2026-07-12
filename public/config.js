@@ -1,11 +1,15 @@
 // Runtime configuration loaded before app.js.
 //
-// Web (served by this Node server): leave KAIROS_API_BASE empty — the API is
-// on the same origin.
-//
-// Packaged iOS/Android app (Capacitor): the web assets are bundled inside the
-// app, so the API is NOT same-origin. Set this to your deployed backend URL
-// before building the native app.
-// NOTE: still the old Render subdomain — rename the service in the Render
-// dashboard to "kairos-pokemon" and update this URL to match.
-window.KAIROS_API_BASE = "https://exalted-pokemon.onrender.com";
+// In a normal browser the API is on the same origin, so the base stays empty.
+// The packaged iOS/Android app (Capacitor) serves its files from
+// capacitor://localhost (or file://), where same-origin calls can't reach the
+// backend — there it uses the deployed URL below.
+// NOTE: still the old Render subdomain — after renaming the service in the
+// Render dashboard to "kairos-pokemon", update this URL to match.
+(function () {
+  var native =
+    location.protocol === "capacitor:" ||
+    location.protocol === "file:" ||
+    (location.hostname === "localhost" && !location.port);
+  window.KAIROS_API_BASE = native ? "https://exalted-pokemon.onrender.com" : "";
+})();
