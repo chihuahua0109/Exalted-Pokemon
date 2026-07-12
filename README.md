@@ -1,4 +1,4 @@
-# ⚡ Exalted Pokémon
+# ⚡ Kairos Pokémon
 
 A clean, self-hosted **Pokémon TCG inventory manager** with **live TCGplayer market pricing** and **AI camera card scanning**.
 
@@ -96,7 +96,7 @@ On your phone (same Wi-Fi as the computer), open the **`https://…:3443`** addr
 
 > If the page won't load from the phone, allow Node through Windows Firewall
 > (private networks):
-> `New-NetFirewallRule -DisplayName "Exalted" -Direction Inbound -LocalPort 3000,3443 -Protocol TCP -Action Allow`
+> `New-NetFirewallRule -DisplayName "Kairos" -Direction Inbound -LocalPort 3000,3443 -Protocol TCP -Action Allow`
 
 ## Project structure
 
@@ -127,7 +127,7 @@ A shipped app can't talk to your PC. Host `server.js` somewhere public:
 - Push this repo to GitHub.
 - On [Render](https://render.com): **New → Blueprint**, select the repo
   (`render.yaml` is included). Set `OCRSPACE_API_KEY` in the dashboard.
-- Note the URL, e.g. `https://exalted-pokemon.onrender.com`.
+- Note the URL, e.g. `https://kairos-pokemon.onrender.com`.
 
 The included blueprint mounts a persistent disk at `/data` (via `DATA_DIR`) so
 accounts/inventory survive restarts. (Disks need a paid Render instance; on the
@@ -157,7 +157,7 @@ Without it, the server falls back to local JSON files (fine for local dev).
 Edit `public/config.js` and set your deployed URL:
 
 ```js
-window.EXALTED_API_BASE = "https://exalted-pokemon.onrender.com";
+window.KAIROS_API_BASE = "https://kairos-pokemon.onrender.com";
 ```
 
 ### 3. Build & submit the iOS app
@@ -173,10 +173,10 @@ One-time setup:
    **App Store Connect API key** (App Manager role). Note the Issuer ID, Key ID,
    and download the `.p8`.
 2. In **App Store Connect → Apps**, create the app (pick bundle id
-   `com.exalted.pokemon`). Copy its numeric **Apple ID** (App Information →
+   `com.kairos.pokemon`). Copy its numeric **Apple ID** (App Information →
    General).
 3. In **Codemagic**, connect this GitHub repo. Add an **App Store Connect
-   integration** (using the API key) and name it `ExaltedASC` (matches
+   integration** (using the API key) and name it `KairosASC` (matches
    `codemagic.yaml`). Edit `codemagic.yaml`: set `APP_STORE_APP_ID` to the
    numeric Apple ID from step 2.
 4. Start the **ios-testflight** workflow. The build appears in
@@ -195,7 +195,7 @@ npx cap open ios      # opens Xcode
 ```
 
 In Xcode: set your **Team** (signing) and the **Bundle Identifier**
-(`com.exalted.pokemon`), add a **Privacy – Camera Usage Description** under the
+(`com.kairos.pokemon`), add a **Privacy – Camera Usage Description** under the
 target's *Info* tab, then **Product → Archive → Distribute App → App Store
 Connect → Upload**. The build then appears in **TestFlight**.
 

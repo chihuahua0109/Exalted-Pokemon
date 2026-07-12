@@ -1,4 +1,4 @@
-# Render.com deployment blueprint for the Exalted Pokemon backend (FREE tier).
+# Render.com deployment blueprint for the Kairos Pokemon backend (FREE tier).
 # Deploy: push this repo to GitHub, then in Render: New > Blueprint > pick repo.
 #
 # NOTE ON DATA PERSISTENCE:
@@ -12,7 +12,9 @@
 #   (b) ask to switch storage to a free database (e.g. MongoDB Atlas, no card).
 services:
   - type: web
-    name: exalted-pokemon
+    # NOTE: the already-deployed service still uses the old name; rename it in
+    # the Render dashboard (Settings > Name) to match. New deploys use this name.
+    name: kairos-pokemon
     runtime: node
     plan: free
     buildCommand: npm install
@@ -34,6 +36,6 @@ services:
 #       - key: DATA_DIR
 #         value: /data
 #     disk:
-#       name: exalted-data
+#       name: kairos-data
 #       mountPath: /data
 #       sizeGB: 1

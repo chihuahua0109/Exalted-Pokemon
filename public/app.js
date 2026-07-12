@@ -16,8 +16,8 @@ const cardImg = (id, size = 500) =>
   `https://tcgplayer-cdn.tcgplayer.com/product/${id}_in_${size}x${size}.jpg`;
 
 // Base URL for the backend API. Empty = same origin (web). For the packaged
-// iOS/Android app, set window.EXALTED_API_BASE in config.js to the deployed URL.
-const API_BASE = (window.EXALTED_API_BASE || "").replace(/\/+$/, "");
+// iOS/Android app, set window.KAIROS_API_BASE in config.js to the deployed URL.
+const API_BASE = (window.KAIROS_API_BASE || "").replace(/\/+$/, "");
 const apiUrl = (path) => API_BASE + path;
 
 const state = {
@@ -31,7 +31,13 @@ const state = {
 };
 
 /* ---------------- Auth token ---------------- */
-const TOKEN_KEY = "exalted_token";
+// Read the old key too so existing logins survive the rebrand.
+const TOKEN_KEY = "kairos_token";
+const legacyToken = localStorage.getItem("exalted_token");
+if (legacyToken && !localStorage.getItem(TOKEN_KEY)) {
+  localStorage.setItem(TOKEN_KEY, legacyToken);
+  localStorage.removeItem("exalted_token");
+}
 let authToken = localStorage.getItem(TOKEN_KEY) || null;
 function setToken(t) {
   authToken = t;
@@ -338,7 +344,7 @@ $("#export-csv").addEventListener("click", () => {
   const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `exalted-collection-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `kairos-collection-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
   toast("Collection exported");
@@ -1714,7 +1720,7 @@ window.addEventListener("beforeinstallprompt", (e) => {
 window.addEventListener("appinstalled", () => {
   installBtn.classList.add("hidden");
   deferredPrompt = null;
-  toast("Installed! Find Exalted on your home screen.");
+  toast("Installed! Find Kairos on your home screen.");
 });
 
 // One-time hint banner for iPhone/iPad Safari users (the platform with no
@@ -1741,7 +1747,7 @@ installBtn.addEventListener("click", async () => {
         "1. Tap the Share button  ⬆️  (the square with an up-arrow) in Safari's toolbar.\n" +
         "2. Scroll down and tap  “Add to Home Screen”.\n" +
         "3. Tap  Add  (top-right).\n\n" +
-        "Then open Exalted from your home screen — full-screen, with camera support.\n\n" +
+        "Then open Kairos from your home screen — full-screen, with camera support.\n\n" +
         "Note: this only works in Safari (not Chrome) on iPhone/iPad."
     );
   } else if (isAndroid) {
@@ -1757,7 +1763,7 @@ installBtn.addEventListener("click", async () => {
     alert(
       "Install on desktop (Chrome / Edge):\n\n" +
         "Click the install icon (a monitor with a ⬇ arrow) at the right end of the\n" +
-        "address bar — or open the  ⋮  menu and choose  “Install Exalted Pokémon”.\n\n" +
+        "address bar — or open the  ⋮  menu and choose  “Install Kairos Pokémon”.\n\n" +
         "Requires the secure https:// address."
     );
   }

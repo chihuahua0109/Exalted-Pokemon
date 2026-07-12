@@ -1,5 +1,5 @@
 {
-  "name": "exalted-pokemons",
+  "name": "kairos-pokemons",
   "version": "1.0.0",
   "description": "Pokemon TCG inventory manager with TCGplayer market pricing and AI camera card scanning.",
   "type": "module",

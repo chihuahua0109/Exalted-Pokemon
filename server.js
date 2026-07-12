@@ -587,7 +587,7 @@ if (process.env.MONGODB_URI) {
       serverSelectionTimeoutMS: 10000,
     });
     await client.connect();
-    const mdb = client.db(process.env.MONGODB_DB || "exalted");
+    const mdb = client.db(process.env.MONGODB_DB || "kairos");
     mongo = {
       users: mdb.collection("users"),
       sessions: mdb.collection("sessions"),
@@ -1006,7 +1006,7 @@ const ips = lanIPs();
 
 // HTTP server (localhost works for camera; LAN works for non-camera features).
 http.createServer(app).listen(PORT, "0.0.0.0", () => {
-  console.log(`\n  ⚡ Exalted Pokemon is running\n`);
+  console.log(`\n  ⚡ Kairos Pokemon is running\n`);
   console.log(`  On this computer:  http://localhost:${PORT}`);
 });
 

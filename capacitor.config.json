@@ -1,6 +1,6 @@
 {
-  "appId": "com.exalted.pokemon",
-  "appName": "Exalted Pokemon",
+  "appId": "com.kairos.pokemon",
+  "appName": "Kairos Pokemon",
   "webDir": "public",
   "ios": {
     "contentInset": "always"
