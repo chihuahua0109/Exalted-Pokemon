@@ -1,10 +1,12 @@
 # Codemagic CI/CD — builds the iOS app on a cloud Mac and ships it to TestFlight.
-# Free individual plan — uses environment variables (no Teams plan needed).
+# Free individual plan. Uses xcodebuild directly with the App Store Connect API key
+# so Xcode handles ALL certificate and provisioning profile management automatically.
 #
 # Required env vars in the "kairos" group in Codemagic:
 #   APP_STORE_CONNECT_ISSUER_ID      — Issuer ID from App Store Connect
-#   APP_STORE_CONNECT_KEY_IDENTIFIER — Key ID (e.g. 538TGDU6JD)  <-- exact name required
+#   APP_STORE_CONNECT_KEY_IDENTIFIER — Key ID (e.g. 538TGDU6JD)
 #   APP_STORE_CONNECT_PRIVATE_KEY    — full contents of your .p8 file
+#   APPLE_TEAM_ID                    — 10-char team ID from developer.apple.com/account
 
 workflows:
   ios-testflight:
@@ -14,14 +16,13 @@ workflows:
     environment:
       groups:
         - kairos
-      ios_signing:
-        distribution_type: app_store
-        bundle_identifier: com.kairos.pokemon
       vars:
         BUNDLE_ID: "com.kairos.pokemon"
         XCODE_WORKSPACE: "ios/App/App.xcworkspace"
         XCODE_SCHEME: "App"
         APP_STORE_APP_ID: "6790096844"
+        ARCHIVE_PATH: "/tmp/KairosApp.xcarchive"
+        IPA_OUTPUT: "/tmp/ipa-output"
       node: 20.12.2
       xcode: latest
       cocoapods: default
@@ -36,7 +37,7 @@ workflows:
           fi
           npx cap sync ios
 
-      - name: Add camera & photo permission strings to Info.plist
+      - name: Add permission strings to Info.plist
         script: |
           PLIST="ios/App/App/Info.plist"
           CAM="Scan your Pokemon cards to identify them and look up prices."
@@ -46,21 +47,63 @@ workflows:
           /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string \"$PHOTO\"" "$PLIST" \
             || /usr/libexec/PlistBuddy -c "Set :NSPhotoLibraryUsageDescription \"$PHOTO\"" "$PLIST"
 
-      - name: Set up code signing
+      - name: Write API key file
         script: |
-          xcode-project use-profiles
+          echo "$APP_STORE_CONNECT_PRIVATE_KEY" > /tmp/AuthKey.p8
+          chmod 600 /tmp/AuthKey.p8
 
       - name: Auto-increment build number
         script: |
-          LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APP_ID" 2>/dev/null || echo 0)
+          LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APP_ID" \
+            --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
+            --key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
+            --private-key @file:/tmp/AuthKey.p8 \
+            2>/dev/null || echo 0)
           cd ios/App
           agvtool new-version -all $((LATEST + 1))
 
-      - name: Build IPA
+      - name: Archive app
         script: |
-          xcode-project build-ipa \
-            --workspace "$XCODE_WORKSPACE" \
-            --scheme "$XCODE_SCHEME"
+          xcodebuild archive \
+            -workspace "$XCODE_WORKSPACE" \
+            -scheme "$XCODE_SCHEME" \
+            -archivePath "$ARCHIVE_PATH" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath /tmp/AuthKey.p8 \
+            -authenticationKeyID "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
+            -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID" \
+            CODE_SIGN_STYLE=Automatic \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            COMPILER_INDEX_STORE_ENABLE=NO
+
+      - name: Export IPA
+        script: |
+          cat > /tmp/ExportOptions.plist << EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>method</key>
+              <string>app-store</string>
+              <key>teamID</key>
+              <string>$APPLE_TEAM_ID</string>
+              <key>uploadSymbols</key>
+              <true/>
+          </dict>
+          </plist>
+          EOF
+
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportPath "$IPA_OUTPUT" \
+            -exportOptionsPlist /tmp/ExportOptions.plist \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath /tmp/AuthKey.p8 \
+            -authenticationKeyID "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
+            -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
+
+          mkdir -p build/ios/ipa
+          cp "$IPA_OUTPUT"/*.ipa build/ios/ipa/
 
     artifacts:
       - build/ios/ipa/*.ipa
