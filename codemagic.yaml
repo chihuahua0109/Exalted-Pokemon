@@ -1,18 +1,15 @@
 # Codemagic CI/CD — builds the iOS app on a cloud Mac and ships it to TestFlight.
-# No local Mac required. See the "Ship to iOS (TestFlight)" section of README.md
-# for the one-time setup (App Store Connect API key + app record).
-#
-# Before your first run, fill in APP_STORE_APP_ID and (optionally) BUNDLE_ID
-# below, and add an "App Store Connect" integration in Codemagic named exactly
-# the group referenced under environment.groups.
+# Uses environment variables for App Store Connect auth (works on the free individual plan).
+# Set these three secret env vars in Codemagic → App settings → Environment variables:
+#   APP_STORE_CONNECT_ISSUER_ID   — your Issuer ID from App Store Connect
+#   APP_STORE_CONNECT_KEY_ID      — your Key ID (e.g. 538TGDU6JD)
+#   APP_STORE_CONNECT_PRIVATE_KEY — full contents of your .p8 file (including header/footer lines)
 
 workflows:
   ios-testflight:
     name: Kairos Pokemon - iOS TestFlight
     instance_type: mac_mini_m2
     max_build_duration: 60
-    integrations:
-      app_store_connect: KairosASC # <- name of your App Store Connect integration in Codemagic
     environment:
       ios_signing:
         distribution_type: app_store
@@ -21,8 +18,6 @@ workflows:
         BUNDLE_ID: "com.kairos.pokemon"
         XCODE_WORKSPACE: "ios/App/App.xcworkspace"
         XCODE_SCHEME: "App"
-        # Numeric Apple ID of the app record in App Store Connect (App Information
-        # > General > Apple ID). Needed to auto-increment the build number.
         APP_STORE_APP_ID: "6790096844"
       node: 20.12.2
       xcode: latest
@@ -63,5 +58,7 @@ workflows:
       - /tmp/xcodebuild_logs/*.log
     publishing:
       app_store_connect:
-        auth: integration
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_ID
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
         submit_to_testflight: true
