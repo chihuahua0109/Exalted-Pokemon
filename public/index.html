@@ -250,13 +250,13 @@
       <div class="modal-backdrop" data-close></div>
       <div class="modal-card scan">
         <button class="modal-x" data-close>×</button>
-        <h2>Scan a card</h2>
-        <p class="scan-sub">Line the card up inside the frame — it captures automatically when the card is steady and in focus. Or tap Capture / upload a photo.</p>
+        <h2>Scan cards</h2>
+        <p class="scan-sub">Line each card up in the frame — it captures on its own. Scan as many as you like, then add them all at once.</p>
 
         <div class="scan-stage">
           <video id="cam-video" autoplay playsinline muted></video>
           <canvas id="cam-canvas" class="hidden"></canvas>
-          <img id="scan-preview" class="hidden" alt="captured card" />
+          <div id="scan-flash" class="scan-flash"></div>
           <div id="scan-guide" class="scan-guide">
             <span class="corner tl"></span><span class="corner tr"></span>
             <span class="corner bl"></span><span class="corner br"></span>
@@ -265,26 +265,35 @@
           <div id="scan-hint" class="scan-hint hidden">Point at a card…</div>
         </div>
 
+        <!-- Scanned cards tray -->
+        <div id="scan-tray" class="scan-tray hidden">
+          <div id="tray-chips" class="tray-chips"></div>
+          <div class="tray-foot">
+            <span class="tray-total">Total: <b id="tray-total">$0.00</b></span>
+            <button class="btn primary" id="tray-add-all" disabled>Add all</button>
+          </div>
+        </div>
+
         <div class="scan-actions">
-          <button class="btn primary" id="capture-btn">📸 Capture</button>
+          <label class="round-btn file-btn" title="Upload a photo">
+            <span>🖼️</span>
+            <input type="file" id="scan-file" accept="image/*" hidden />
+          </label>
+          <button class="shutter" id="capture-btn" title="Capture" aria-label="Capture"></button>
           <label class="auto-toggle" title="Capture automatically when a card is detected">
             <input type="checkbox" id="auto-capture" checked />
             <span>Auto</span>
           </label>
-          <label class="btn ghost file-btn">
-            Upload photo
-            <input type="file" id="scan-file" accept="image/*" hidden />
-          </label>
-          <button class="btn ghost hidden" id="retake-btn">Retake</button>
-        </div>
-
-        <div id="scan-progress" class="scan-progress hidden">
-          <div class="spinner"></div>
-          <span id="scan-progress-text">Reading card…</span>
         </div>
 
         <div id="scan-results" class="scan-results"></div>
       </div>
+    </div>
+
+    <!-- QUICK STATS SHEET (tap a scanned card chip) -->
+    <div id="chip-sheet" class="chip-sheet hidden">
+      <div class="chip-sheet-backdrop" data-sheetclose></div>
+      <div class="chip-sheet-card" id="chip-sheet-body"></div>
     </div>
 
     <div id="toast" class="toast hidden"></div>

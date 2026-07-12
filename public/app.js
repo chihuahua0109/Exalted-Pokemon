@@ -26,6 +26,7 @@ const state = {
   searchResults: [],
   detail: null,
   scanMatches: [],
+  scanBatch: [], // cards captured in the current scan session
   collapsedGroups: new Set(),
 };
 
@@ -875,25 +876,11 @@ async function addToCollection(p, opts = {}) {
   return saved;
 }
 
-async function addScanMatch(productId, btn) {
-  const p = findProduct(productId);
-  if (!p) return;
-  try {
-    await addToCollection(p, { keepScan: true });
-    if (btn) {
-      btn.textContent = "✓ Added";
-      btn.classList.add("added");
-      btn.disabled = true;
-    }
-  } catch {
-    toast("Couldn't add — try again");
-  }
-}
-
 /* ---------------- Modals close ---------------- */
 function closeModals() {
   $("#detail-modal").classList.add("hidden");
   $("#camera-modal").classList.add("hidden");
+  $("#chip-sheet").classList.add("hidden");
   stopCamera();
 }
 document.addEventListener("click", (e) => {
@@ -908,7 +895,6 @@ const cam = {
   stream: null,
   video: $("#cam-video"),
   canvas: $("#cam-canvas"),
-  preview: $("#scan-preview"),
 };
 
 $("#open-camera").addEventListener("click", openCamera);
@@ -926,6 +912,10 @@ const dctx = det.getContext("2d", { willReadFrequently: true });
 let detTimer = null;
 let cardVisibleMs = 0;
 let lastDetTick = 0;
+// After a capture, auto mode waits for the frame to clear (card swapped)
+// before it can fire again — prevents double-scanning the same card.
+let autoArmed = true;
+let frameClearMs = 0;
 
 // Map the guide box to source pixels in the video stream.
 function guideRegion(v) {
@@ -1055,10 +1045,20 @@ function detLoop() {
   if (!cardFillsFrame) {
     cardVisibleMs = 0;
     ring.classList.remove("show");
+    // Re-arm auto capture once the frame has been clear for a moment
+    // (i.e. the previous card was taken away).
+    frameClearMs += elapsed;
+    if (frameClearMs > 500) autoArmed = true;
     // Distinguish "nothing here" from "card not fully in frame" so the user
     // knows to move the card to fill the guide.
     setHint(somethingThere ? "Fit the whole card in the frame…" : "Point at a card…", false);
+  } else if (!autoArmed) {
+    // Same card still sitting in frame right after a capture.
+    frameClearMs = 0;
+    ring.classList.remove("show");
+    setHint("Captured ✓ — swap to the next card", true);
   } else {
+    frameClearMs = 0;
     cardVisibleMs += elapsed;
     const progress = Math.min(100, Math.round((cardVisibleMs / CARD_HOLD_MS) * 100));
     const secsLeft = Math.max(0, Math.ceil((CARD_HOLD_MS - cardVisibleMs) / 1000));
@@ -1069,8 +1069,8 @@ function detLoop() {
     setHint(secsLeft > 0 ? `Hold still… ${secsLeft}s` : "Scanning…", true);
 
     if ($("#auto-capture").checked && cardVisibleMs >= CARD_HOLD_MS) {
-      autoCapture();
-      return;
+      captureToBatch();
+      // keep the loop running — the camera stays live for the next card
     }
   }
   detTimer = setTimeout(detLoop, 110);
@@ -1080,6 +1080,8 @@ function startDetect() {
   stopDetect();
   cardVisibleMs = 0;
   lastDetTick = 0;
+  autoArmed = true;
+  frameClearMs = 0;
   $("#scan-guide").classList.remove("hidden");
   detLoop();
 }
@@ -1088,13 +1090,25 @@ function stopDetect() {
   detTimer = null;
 }
 
-function autoCapture() {
+// Capture the current frame into the batch tray. Used by both auto capture
+// and the shutter button. The camera keeps running.
+function captureToBatch() {
   const url = captureFromGuide();
   if (!url) return;
-  stopDetect();
-  showCaptured(url);
-  toast("Card captured");
-  recognize(url);
+  cardVisibleMs = 0;
+  autoArmed = false; // wait for the card to leave the frame before re-firing
+  flashStage();
+  navigator.vibrate?.(35);
+  addCapture(url);
+}
+
+// Brief white flash so the user knows a shot was taken.
+function flashStage() {
+  const f = $("#scan-flash");
+  if (!f) return;
+  f.classList.remove("go");
+  void f.offsetWidth; // restart the animation
+  f.classList.add("go");
 }
 
 function cameraUnavailable(html) {
@@ -1161,54 +1175,24 @@ function stopCamera() {
 }
 
 function resetScanUI() {
-  cam.preview.classList.add("hidden");
   cam.video.classList.remove("hidden");
-  document.querySelector(".scan-stage")?.classList.remove("captured");
   $("#capture-btn").classList.remove("hidden");
-  $("#retake-btn").classList.add("hidden");
-  $("#scan-progress").classList.add("hidden");
   $("#scan-results").innerHTML = "";
   state.scanMatches = [];
+  renderTray(); // restore the tray from any previous session
   if (cam.stream) startDetect();
 }
 
-$("#capture-btn").addEventListener("click", () => {
-  const url = captureFromGuide();
-  if (!url) return;
-  stopDetect();
-  showCaptured(url);
-  recognize(url);
-});
+$("#capture-btn").addEventListener("click", captureToBatch);
 
 $("#scan-file").addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (!file) return;
-  stopDetect();
   const reader = new FileReader();
-  reader.onload = () => {
-    showCaptured(reader.result);
-    recognize(reader.result);
-  };
+  reader.onload = () => addCapture(reader.result);
   reader.readAsDataURL(file);
+  e.target.value = ""; // allow re-selecting the same file
 });
-
-$("#retake-btn").addEventListener("click", resetScanUI);
-
-function showCaptured(url) {
-  cam.preview.src = url;
-  cam.preview.classList.remove("hidden");
-  cam.video.classList.add("hidden");
-  $("#scan-guide").classList.add("hidden");
-  $("#scan-hint").classList.add("hidden");
-  $("#capture-btn").classList.add("hidden");
-  $("#retake-btn").classList.remove("hidden");
-  document.querySelector(".scan-stage")?.classList.add("captured");
-  // The modal content changes height here (buttons swap + progress appears),
-  // which nudges the scroll position on iOS. Pin back to the top so the
-  // captured card stays fully in view.
-  const modal = document.querySelector(".modal-card.scan");
-  if (modal) requestAnimationFrame(() => modal.scrollTo({ top: 0, behavior: "smooth" }));
-}
 
 // Card boilerplate that should never be treated as the card name.
 const STOP_TOKENS = new Set([
@@ -1388,13 +1372,10 @@ function rerankByCard(products, parsed) {
   return [...products].sort((a, b) => scoreOf(b) - scoreOf(a));
 }
 
-async function recognize(imageUrl) {
-  const prog = $("#scan-progress");
-  const progText = $("#scan-progress-text");
-  prog.classList.remove("hidden");
-  $("#scan-results").innerHTML = "";
-  progText.textContent = "Reading card…";
-
+/* ---------------- Recognition (shared by every capture) ---------------- */
+// Identify one card image: server OCR/AI first, local Tesseract as fallback.
+// Returns { parsed, products, confidence, source, rateLimited }.
+async function scanImage(imageUrl) {
   // 1) Cloud OCR via the server — far more accurate, handles holo/foil cards.
   try {
     const jpeg = await toJpeg(imageUrl, 1600);
@@ -1406,26 +1387,15 @@ async function recognize(imageUrl) {
     if (r.ok) {
       const d = await r.json();
       if (d.rateLimited) {
-        prog.classList.add("hidden");
-        state.scanMatches = [];
-        renderScanResults(
-          { name: "", number: null, hp: null },
-          [],
-          "",
-          { rateLimited: true }
-        );
-        return;
+        return { parsed: { name: "", number: null, hp: null }, products: [], rateLimited: true };
       }
       if (d.name || (d.products && d.products.length)) {
-        prog.classList.add("hidden");
-        state.scanMatches = d.products || [];
-        renderScanResults(
-          { name: d.name, number: d.number, hp: d.hp },
-          d.products || [],
-          d.name,
-          { confidence: d.confidence, source: d.source }
-        );
-        return;
+        return {
+          parsed: { name: d.name, number: d.number, hp: d.hp },
+          products: d.products || [],
+          confidence: d.confidence,
+          source: d.source,
+        };
       }
     }
   } catch {
@@ -1433,163 +1403,290 @@ async function recognize(imageUrl) {
   }
 
   // 2) Offline fallback: local Tesseract OCR.
-  progText.textContent = "Reading card (offline)…";
-  let parsed;
   try {
     const prepped = await preprocess(imageUrl).catch(() => imageUrl);
-    const { data } = await Tesseract.recognize(prepped, "eng", {
-      logger: (m) => {
-        if (m.status === "recognizing text")
-          progText.textContent = `Reading card… ${Math.round(m.progress * 100)}%`;
-      },
-    });
-    parsed = parseOcr(data);
-  } catch {
-    prog.classList.add("hidden");
-    $("#scan-results").innerHTML = `<div class="scan-ocr">Couldn't read the image. Try better lighting or upload a clearer photo.</div>`;
-    return;
-  }
-
-  progText.textContent = "Matching to TCGplayer…";
-
-  let products = [];
-  try {
-    if (parsed.name && parsed.name.length >= 2) {
-      ({ products } = await api.search(parsed.name));
+    const { data } = await Tesseract.recognize(prepped, "eng");
+    const parsed = parseOcr(data);
+    let products = [];
+    try {
+      if (parsed.name && parsed.name.length >= 2) {
+        ({ products } = await api.search(parsed.name));
+      }
+      if (!products.length) {
+        const alt = (parsed.raw.split(" · ")[0] || "").replace(/[^A-Za-z' ]/g, "").trim();
+        if (alt.length >= 3) ({ products } = await api.search(alt));
+      }
+    } catch {
+      /* ignore */
     }
-    // Fallback: try the first raw line if the name search came up empty.
-    if (!products.length) {
-      const alt = (parsed.raw.split(" · ")[0] || "").replace(/[^A-Za-z' ]/g, "").trim();
-      if (alt.length >= 3) ({ products } = await api.search(alt));
-    }
+    products = rerankByCard(products, parsed);
+    return { parsed, products, confidence: null, source: "ocr" };
   } catch {
-    /* ignore */
+    return { parsed: { name: "", number: null, hp: null }, products: [], failed: true };
   }
-
-  products = rerankByCard(products, parsed);
-  prog.classList.add("hidden");
-  state.scanMatches = products;
-  renderScanResults(parsed, products, parsed.name);
 }
 
-function renderScanResults(parsed, products, query, meta = {}) {
-  const box = $("#scan-results");
-  const bits = [];
-  if (parsed.number) bits.push(`#${esc(parsed.number)}`);
-  if (parsed.hp) bits.push(`${esc(parsed.hp)} HP`);
-  if (meta.rateLimited) {
-    box.innerHTML = `<div class="scan-ocr rate-limit-msg">
-      <b>⚠ Card reader busy</b> — the free OCR limit was hit. Type the card name below to search manually:
-      <div class="scan-edit" style="margin-top:8px">
-        <input id="scan-query" class="filter-input" value="" placeholder="e.g. Psyduck, Charizard ex…" />
-        <button class="btn primary" id="scan-research">Search</button>
+/* ---------------- Scan batch tray ---------------- */
+// Small square thumb for the tray while the card is being identified.
+async function makeThumb(url, size = 140) {
+  const img = await loadImage(url);
+  const c = document.createElement("canvas");
+  const scale = size / Math.max(img.naturalWidth || 1, img.naturalHeight || 1);
+  c.width = Math.max(1, Math.round((img.naturalWidth || size) * scale));
+  c.height = Math.max(1, Math.round((img.naturalHeight || size) * scale));
+  c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.8);
+}
+
+async function addCapture(imageUrl) {
+  const chip = {
+    id: "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    image: imageUrl,
+    thumb: imageUrl,
+    status: "reading",
+    parsed: null,
+    products: [],
+    chosen: null,
+    confidence: null,
+    rateLimited: false,
+  };
+  makeThumb(imageUrl).then((t) => {
+    chip.thumb = t;
+    renderTray();
+  }).catch(() => {});
+  state.scanBatch.push(chip);
+  renderTray();
+
+  const res = await scanImage(imageUrl);
+  chip.parsed = res.parsed;
+  chip.products = res.products || [];
+  chip.confidence = res.confidence ?? null;
+  chip.rateLimited = !!res.rateLimited;
+  chip.chosen = chip.products[0] || null;
+  chip.status = chip.chosen ? "done" : "error";
+  renderTray();
+  if (!chip.chosen) {
+    toast(chip.rateLimited ? "Reader busy — tap the card to search by name" : "No match — tap the card to fix it");
+  }
+}
+
+function trayTotal() {
+  return state.scanBatch.reduce((s, c) => s + (c.chosen?.marketPrice || 0), 0);
+}
+
+function chipHTML(c) {
+  if (c.status === "reading") {
+    return `
+      <div class="tray-chip reading" data-chip="${c.id}">
+        <img src="${c.thumb}" alt="" />
+        <div class="chip-body">
+          <div class="chip-name muted">Reading…</div>
+          <div class="chip-spin"></div>
+        </div>
+      </div>`;
+  }
+  if (!c.chosen) {
+    return `
+      <div class="tray-chip nomatch" data-chip="${c.id}">
+        <img src="${c.thumb}" alt="" />
+        <div class="chip-body">
+          <div class="chip-name">No match</div>
+          <div class="chip-meta">tap to fix</div>
+        </div>
+        <button class="chip-x" data-chipdel="${c.id}" aria-label="Remove">×</button>
+      </div>`;
+  }
+  const p = c.chosen;
+  return `
+    <div class="tray-chip" data-chip="${c.id}">
+      <img src="${esc(p.image)}" alt="" onerror="this.src='${c.thumb}'" />
+      <div class="chip-body">
+        <div class="chip-name">${esc(p.name)}</div>
+        <div class="chip-meta">${p.number ? "#" + esc(p.number) : esc(p.set || "")}</div>
+        <div class="chip-price">${money(p.marketPrice)}</div>
       </div>
+      <button class="chip-x" data-chipdel="${c.id}" aria-label="Remove">×</button>
     </div>`;
-    $("#scan-research").addEventListener("click", reSearchScan);
-    $("#scan-query").addEventListener("keydown", (e) => { if (e.key === "Enter") reSearchScan(); });
-    setTimeout(() => $("#scan-query")?.focus(), 100);
+}
+
+function renderTray() {
+  const tray = $("#scan-tray");
+  if (!tray) return;
+  const batch = state.scanBatch;
+  tray.classList.toggle("hidden", batch.length === 0);
+  $("#tray-chips").innerHTML = batch.map(chipHTML).join("");
+  $("#tray-total").textContent = money(trayTotal());
+  const ready = batch.filter((c) => c.chosen).length;
+  const btn = $("#tray-add-all");
+  btn.disabled = ready === 0;
+  btn.textContent = ready ? `Add all (${ready})` : "Add all";
+  // Keep the newest chip in view.
+  const chips = $("#tray-chips");
+  requestAnimationFrame(() => (chips.scrollLeft = chips.scrollWidth));
+}
+
+$("#tray-chips").addEventListener("click", (e) => {
+  const del = e.target.closest("[data-chipdel]");
+  if (del) {
+    state.scanBatch = state.scanBatch.filter((c) => c.id !== del.dataset.chipdel);
+    renderTray();
     return;
   }
-  const conf = meta.confidence != null ? Math.round(meta.confidence * 100) : null;
-  const srcTag =
-    meta.source === "ai"
-      ? `<span class="src-tag ai">✦ AI vision</span>`
-      : meta.source === "ocr"
-      ? `<span class="src-tag">OCR</span>`
-      : "";
-  const readout = `
-    <div class="scan-ocr">
-      <div class="scan-detected">Detected: <b>${esc(parsed.name || "—")}</b>${bits.length ? ` &nbsp;·&nbsp; ${bits.join(" · ")}` : ""} ${srcTag}</div>
-      <div class="scan-edit">
-        <input id="scan-query" class="filter-input" value="${esc(query || parsed.name)}" placeholder="Edit the name and search again" />
-        <button class="btn ghost" id="scan-research">Search</button>
+  const chip = e.target.closest("[data-chip]");
+  if (chip) openChipSheet(chip.dataset.chip);
+});
+
+$("#tray-add-all").addEventListener("click", async (e) => {
+  const ready = state.scanBatch.filter((c) => c.chosen);
+  if (!ready.length) return;
+  const btn = e.target;
+  btn.disabled = true;
+  btn.textContent = "Adding…";
+  let added = 0;
+  for (const c of ready) {
+    const p = c.chosen;
+    try {
+      await api.addItem({
+        productId: p.productId,
+        name: p.name,
+        set: p.set,
+        number: p.number,
+        rarity: p.rarity,
+        image: p.image,
+        imageLarge: p.imageLarge,
+        url: p.url,
+        sealed: p.sealed,
+        attributes: p.attributes,
+        marketPrice: p.marketPrice,
+        condition: "Near Mint",
+        quantity: 1,
+      });
+      added++;
+      state.scanBatch = state.scanBatch.filter((x) => x.id !== c.id);
+      renderTray();
+    } catch {
+      /* leave failed chips in the tray */
+    }
+  }
+  await loadUserData();
+  btn.textContent = "Add all";
+  toast(added ? `Added ${added} card${added === 1 ? "" : "s"} to your collection` : "Couldn't add — try again");
+});
+
+/* ---------------- Quick stats sheet (tap a chip) ---------------- */
+function closeChipSheet() {
+  $("#chip-sheet").classList.add("hidden");
+}
+document.addEventListener("click", (e) => {
+  if (e.target.closest("[data-sheetclose]")) closeChipSheet();
+});
+
+function openChipSheet(id) {
+  const c = state.scanBatch.find((x) => x.id === id);
+  if (!c || c.status === "reading") return;
+  renderChipSheet(c);
+  $("#chip-sheet").classList.remove("hidden");
+}
+
+function renderChipSheet(c) {
+  const p = c.chosen;
+  const conf = c.confidence != null ? Math.round(c.confidence * 100) : null;
+
+  const alts = (c.products || [])
+    .slice(0, 5)
+    .map(
+      (alt) => `
+      <div class="sheet-alt ${p && alt.productId === p.productId ? "sel" : ""}" data-alt="${alt.productId}">
+        <img src="${esc(alt.image)}" alt="" onerror="this.style.opacity=.2" />
+        <div class="alt-body">
+          <div class="alt-name">${esc(alt.name)}</div>
+          <div class="alt-meta">${esc(alt.set || "")}${alt.number ? " · #" + esc(alt.number) : ""}</div>
+        </div>
+        <div class="alt-price">${money(alt.marketPrice)}</div>
+      </div>`
+    )
+    .join("");
+
+  $("#chip-sheet-body").innerHTML = `
+    <div class="sheet-grip"></div>
+    ${
+      p
+        ? `
+    <div class="sheet-top">
+      <img src="${esc(p.image)}" alt="" onerror="this.style.opacity=.2" />
+      <div class="sheet-title">
+        <h3>${esc(p.name)}</h3>
+        <div class="sheet-meta">${esc(p.set || "")}${p.number ? " · #" + esc(p.number) : ""}</div>
+        <div class="sheet-tags">
+          ${p.rarity ? `<span class="rarity-pill">${esc(p.rarity)}</span>` : ""}
+          ${conf != null ? `<span class="conf ${conf >= 80 ? "hi" : conf >= 50 ? "mid" : "lo"}">${conf}% match</span>` : ""}
+        </div>
       </div>
-      ${products.length ? "" : `<div style="margin-top:6px">No match — edit the name above and tap Search.</div>`}
+    </div>
+    <div class="price-row">
+      <div class="price-chip market"><div class="lbl">Market</div><div class="val">${money(p.marketPrice)}</div></div>
+      <div class="price-chip"><div class="lbl">Median</div><div class="val">${money(p.medianPrice)}</div></div>
+      <div class="price-chip"><div class="lbl">Lowest</div><div class="val">${money(p.lowestPrice)}</div></div>
+    </div>`
+        : `
+    <div class="sheet-none">
+      <b>⚠ Couldn't match this card${c.rateLimited ? " — the card reader is busy" : ""}.</b>
+      Search for it by name:
+    </div>`
+    }
+    <div class="scan-edit sheet-search">
+      <input id="sheet-query" class="filter-input" value="${esc(c.parsed?.name || "")}" placeholder="e.g. Psyduck, Charizard ex…" />
+      <button class="btn ghost" id="sheet-search-btn">Search</button>
+    </div>
+    ${alts ? `<div class="sheet-alts-label muted">${p ? "Not the right printing? Tap the correct one:" : ""}</div><div class="sheet-alts">${alts}</div>` : ""}
+    <div class="sheet-actions">
+      <button class="btn ghost danger" id="sheet-retake">🗑 Retake</button>
+      ${p ? `<button class="btn ghost" id="sheet-details">Full details</button>` : ""}
+      <button class="btn primary" id="sheet-done">Done</button>
     </div>`;
 
-  const matches = products.length
-    ? products
-        .slice(0, 6)
-        .map(
-          (p, i) => `
-        <div class="scan-match ${i === 0 ? "best" : ""}" data-scan="${p.productId}">
-          <img src="${esc(p.image)}" alt="" onerror="this.style.opacity=.2" />
-          <div class="m-body">
-            <div class="m-name">${esc(p.name)}${
-              i === 0 && conf != null
-                ? ` <span class="conf ${conf >= 80 ? "hi" : conf >= 50 ? "mid" : "lo"}">${conf}% match</span>`
-                : ""
-            }</div>
-            <div class="m-meta">${esc(p.set || "")}${p.number ? " · #" + esc(p.number) : ""}</div>
-            <div class="m-price">${money(p.marketPrice)}</div>
-          </div>
-          <button class="btn primary scan-add" data-add="${p.productId}">+ Add</button>
-        </div>`
-        )
-        .join("")
-    : "";
-
-  const quickAdd =
-    products.length && conf != null && conf >= 40
-      ? `<div class="scan-quick-add">
-          <div class="hint">Best match: <b>${esc(products[0].name)}</b>${products[0].number ? ` · #${esc(products[0].number)}` : ""}</div>
-          <button class="btn primary" id="scan-add-best" data-add="${products[0].productId}">Add to collection</button>
-        </div>`
-      : products.length
-      ? `<div class="scan-quick-add">
-          <div class="hint">Tap <b>+ Add</b> on the correct printing, or tap a row for full details.</div>
-        </div>`
-      : "";
-
-  box.innerHTML = readout + quickAdd + matches;
-
-  $("#scan-research").addEventListener("click", reSearchScan);
-  $("#scan-query").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") reSearchScan();
+  // Wire sheet events.
+  $("#sheet-done").addEventListener("click", closeChipSheet);
+  $("#sheet-retake").addEventListener("click", () => {
+    state.scanBatch = state.scanBatch.filter((x) => x.id !== c.id);
+    renderTray();
+    closeChipSheet();
+    toast("Removed — scan it again");
   });
-  const bestBtn = $("#scan-add-best");
-  if (bestBtn) {
-    bestBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      addScanMatch(Number(bestBtn.dataset.add), bestBtn);
-    });
-  }
-  $$("[data-add]", box).forEach((btn) => {
-    if (btn.id === "scan-add-best") return;
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      addScanMatch(Number(btn.dataset.add), btn);
-    });
+  $("#sheet-details")?.addEventListener("click", () => {
+    state.scanMatches = c.products;
+    closeChipSheet();
+    openDetailById(p.productId);
   });
-  $$(".scan-match", box).forEach((el) =>
-    el.addEventListener("click", (e) => {
-      if (e.target.closest("[data-add]")) return;
-      openDetailById(Number(el.dataset.scan));
+  const doSearch = async () => {
+    const q = $("#sheet-query").value.trim();
+    if (!q) return;
+    $("#sheet-search-btn").textContent = "…";
+    try {
+      const { products } = await api.search(q);
+      c.products = products;
+      c.chosen = products[0] || null;
+      c.status = c.chosen ? "done" : "error";
+      renderTray();
+      renderChipSheet(c);
+    } catch {
+      $("#sheet-search-btn").textContent = "Search";
+    }
+  };
+  $("#sheet-search-btn").addEventListener("click", doSearch);
+  $("#sheet-query").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") doSearch();
+  });
+  $$(".sheet-alt", $("#chip-sheet-body")).forEach((el) =>
+    el.addEventListener("click", () => {
+      const alt = c.products.find((x) => x.productId === Number(el.dataset.alt));
+      if (!alt) return;
+      c.chosen = alt;
+      c.status = "done";
+      renderTray();
+      renderChipSheet(c);
     })
   );
-
-  // Bring the results into view once they exist (they render below the tall
-  // capture preview, otherwise the user has to notice and scroll manually).
-  if (products.length || parsed.name) {
-    requestAnimationFrame(() =>
-      box.scrollIntoView({ behavior: "smooth", block: "nearest" })
-    );
-  }
-}
-
-async function reSearchScan() {
-  const q = $("#scan-query").value.trim();
-  if (!q) return;
-  $("#scan-progress").classList.remove("hidden");
-  $("#scan-progress-text").textContent = "Searching…";
-  try {
-    const { products } = await api.search(q);
-    state.scanMatches = products;
-    $("#scan-progress").classList.add("hidden");
-    renderScanResults({ name: q, number: null }, products, q);
-  } catch {
-    $("#scan-progress").classList.add("hidden");
-  }
 }
 
 /* ---------------- Install (PWA) ---------------- */

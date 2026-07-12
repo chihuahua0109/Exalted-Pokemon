@@ -1,4 +1,4 @@
-const CACHE = "exalted-v20";
+const CACHE = "exalted-v21";
 const SHELL = [
   "/",
   "/index.html",
