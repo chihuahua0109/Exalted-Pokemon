@@ -973,9 +973,25 @@ function visibleRegion(v) {
 function captureFromGuide() {
   const v = cam.video;
   if (!v.videoWidth) return null;
-  // Capture the full visible stage (no inset) so the whole card the user framed is
-  // included with a little margin. Matches the on-screen preview exactly.
-  const r = visibleRegion(v);
+  const stage = visibleRegion(v);
+  // Prefer a crop centered on the card the detector just located — captures
+  // come out tight and centered instead of including the whole background.
+  // Fall back to the full visible stage (manual shutter, stale detection).
+  let r = stage;
+  const g = guideRegion(v);
+  if (
+    lastCardBox &&
+    Date.now() - lastCardBox.time < 900 &&
+    lastCardBox.w > g.w * 0.45 &&
+    lastCardBox.h > g.h * 0.45
+  ) {
+    r = {
+      x: Math.max(0, lastCardBox.x),
+      y: Math.max(0, lastCardBox.y),
+      w: Math.min(lastCardBox.w, v.videoWidth - lastCardBox.x),
+      h: Math.min(lastCardBox.h, v.videoHeight - lastCardBox.y),
+    };
+  }
   const c = cam.canvas;
   c.width = Math.round(r.w);
   c.height = Math.round(r.h);
@@ -1025,10 +1041,12 @@ function analyzeFrame() {
   const bx = Math.round(DET_W * 0.2); // side band widths
   const by = Math.round(DET_H * 0.2);
 
-  // A physical card edge is a STRAIGHT line: strong gradients at the same row
-  // (top/bottom) or column (left/right) across most of the band. Busy textures
-  // (blankets, wood grain) scatter their gradients across the whole band and
-  // never line up, so scoring the best 3-row/col window rejects them.
+  // A physical card edge is a STRAIGHT ISOLATED line: strong gradients at the
+  // same row (top/bottom) or column (left/right) across most of the band, with
+  // little else in that band. Two tests per side:
+  //   frac  – best 3-row/col window coverage (is there a long straight line?)
+  //   ratio – window hits vs ALL band hits (is the line isolated, or is the
+  //           whole band just busy texture — ceilings, blankets, wood grain?)
   const rowHitsTop = new Float32Array(by);
   const rowHitsBot = new Float32Array(by);
   for (let x = 1; x < DET_W - 1; x++) {
@@ -1047,23 +1065,43 @@ function analyzeFrame() {
       if (Math.abs(gray[y * DET_W + xx + 1] - gray[y * DET_W + xx - 1]) > T) colHitsR[x]++;
     }
   }
-  // Best 3-wide window = the straightest candidate line in the band
-  // (3 wide tolerates a slightly tilted card).
   const lineScore = (hits, len) => {
     let best = 0;
+    let bestIdx = -1;
+    let totalHits = 0;
+    for (let i = 0; i < hits.length; i++) totalHits += hits[i];
     for (let i = 1; i < hits.length; i++) {
       const w = hits[i] + (hits[i - 1] || 0) + (i + 1 < hits.length ? hits[i + 1] : 0);
-      if (w > best) best = w;
+      if (w > best) {
+        best = w;
+        bestIdx = i;
+      }
     }
-    return best / len;
+    return {
+      frac: best / len,
+      ratio: best / Math.max(1, totalHits),
+      idx: bestIdx,
+    };
   };
-  const fr = [
-    lineScore(rowHitsTop, DET_W - 2),
-    lineScore(rowHitsBot, DET_W - 2),
-    lineScore(colHitsL, DET_H - 2),
-    lineScore(colHitsR, DET_H - 2),
-  ];
-  const sides = fr.filter((f) => f > 0.6).length;
+  const top = lineScore(rowHitsTop, DET_W - 2);
+  const bot = lineScore(rowHitsBot, DET_W - 2);
+  const left = lineScore(colHitsL, DET_H - 2);
+  const right = lineScore(colHitsR, DET_H - 2);
+  const isEdge = (s) => s.frac > 0.55 && s.ratio > 0.42;
+  const ok = [isEdge(top), isEdge(bot), isEdge(left), isEdge(right)];
+  const sides = ok.filter(Boolean).length;
+  // A card has PARALLEL edge pairs. Wall corners, ceiling lines and door frames
+  // produce stray straight lines but almost never two opposite ones.
+  const hasPair = (ok[0] && ok[1]) || (ok[2] && ok[3]);
+
+  // Where each detected edge sits, in detection-canvas pixels
+  // (bot/right indexes count inward from the far side).
+  const edgesAt = {
+    top: ok[0] ? top.idx : null,
+    bot: ok[1] ? DET_H - 1 - bot.idx : null,
+    left: ok[2] ? left.idx : null,
+    right: ok[3] ? DET_W - 1 - right.idx : null,
+  };
 
   // Interior busy-ness (central 60%) — card faces have artwork and text.
   let edges = 0;
@@ -1080,7 +1118,39 @@ function analyzeFrame() {
       if (gx + gy > T) edges++;
     }
   }
-  return { sides, density: edges / Math.max(1, total), motion };
+  return {
+    sides,
+    hasPair,
+    density: edges / Math.max(1, total),
+    motion,
+    edgesAt,
+    sample: { sx, sy, sw, sh },
+  };
+}
+
+// Latest good card-edge fix, used to crop captures tightly around the card.
+let lastCardBox = null;
+
+// Convert detected edge positions to a crop box in video pixels, filling any
+// missing side with the guide's own edge. A small margin keeps the card's
+// border visible (OCR wants the full card, including the collector number).
+function cardBoxFromAnalysis(a) {
+  const s = a.sample;
+  const px = (x) => s.sx + (x / DET_W) * s.sw;
+  const py = (y) => s.sy + (y / DET_H) * s.sh;
+  const x0 = a.edgesAt.left != null ? px(a.edgesAt.left) : s.sx;
+  const x1 = a.edgesAt.right != null ? px(a.edgesAt.right) : s.sx + s.sw;
+  const y0 = a.edgesAt.top != null ? py(a.edgesAt.top) : s.sy;
+  const y1 = a.edgesAt.bot != null ? py(a.edgesAt.bot) : s.sy + s.sh;
+  const mw = (x1 - x0) * 0.045;
+  const mh = (y1 - y0) * 0.045;
+  return {
+    x: Math.max(0, x0 - mw),
+    y: Math.max(0, y0 - mh),
+    w: x1 - x0 + 2 * mw,
+    h: y1 - y0 + 2 * mh,
+    time: Date.now(),
+  };
 }
 
 function setHint(text, good) {
@@ -1102,12 +1172,13 @@ function detLoop() {
     detTimer = setTimeout(detLoop, 110);
     return;
   }
-  // A real card shows at least 3 of its 4 physical edges as straight contrast
-  // lines near the guide, plus a busy interior (artwork/text). Floors, tables
-  // and random backgrounds don't produce that outline.
-  const cardDetected = a.sides >= 3 && a.density > 0.03;
+  // A real card shows at least 3 of its 4 physical edges as straight isolated
+  // lines — including one PARALLEL pair — plus a busy interior (artwork/text).
+  // Ceilings, walls, floors and bedding don't produce that structure.
+  const cardDetected = a.sides >= 3 && a.hasPair && a.density > 0.04;
   const partiallyIn = a.sides >= 1 && a.density > 0.03;
   const steady = a.motion < 8;
+  if (cardDetected) lastCardBox = cardBoxFromAnalysis(a);
 
   const guide = $("#scan-guide");
   const ring = $("#scan-ring");
@@ -1158,6 +1229,7 @@ function startDetect() {
   autoArmed = true;
   frameClearMs = 0;
   prevGray = null;
+  lastCardBox = null;
   $("#scan-guide").classList.remove("hidden");
   detLoop();
 }

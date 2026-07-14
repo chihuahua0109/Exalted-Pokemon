@@ -682,3 +682,93 @@ body {
 @media (display-mode: standalone) {
   .topbar { padding-top: calc(12px + env(safe-area-inset-top)); }
 }
+
+/* ------------------------------------------------------------------ *
+ * Polish pass: depth, feedback and consistency. Overrides live here so
+ * the base rules above stay easy to follow.
+ * ------------------------------------------------------------------ */
+
+/* Keyboard/focus feedback everywhere, without stealing the mouse UX */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+
+/* Slim dark scrollbars (desktop) */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--panel-2); border-radius: 8px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: var(--line); }
+
+/* Stats bar: subtle gradient panel with dividers between figures */
+.stats {
+  background: linear-gradient(135deg, rgba(255, 210, 63, 0.05), rgba(79, 140, 255, 0.04)), var(--panel);
+  gap: 0;
+}
+.stats .stat { padding: 0 18px; }
+.stats .stat:first-child { padding-left: 4px; }
+.stats .stat + .stat { border-left: 1px solid var(--line); }
+.stats .btn { margin-left: auto; }
+
+/* Buttons: colored glows for the two main actions */
+.btn.primary { box-shadow: 0 4px 16px rgba(255, 178, 32, 0.22); }
+.btn.primary:hover { filter: brightness(1.07); }
+.btn.camera { box-shadow: 0 4px 16px rgba(79, 140, 255, 0.25); }
+.btn.camera:hover { filter: brightness(1.07); }
+
+/* Inputs */
+.filter-input::placeholder, .search-box input::placeholder { color: rgba(154, 166, 196, 0.55); }
+.filter-input:focus, .search-box:focus-within { box-shadow: 0 0 0 3px rgba(255, 210, 63, 0.12); }
+
+/* Cards: quantity badge pops a little more */
+.card-qty-badge { border-color: rgba(255, 210, 63, 0.45); box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4); }
+
+/* Group headers: accent tick before the title */
+.group-header h3 { display: flex; align-items: center; gap: 9px; }
+.group-header h3::before {
+  content: ""; width: 4px; height: 15px; border-radius: 3px;
+  background: linear-gradient(var(--accent), var(--accent-2)); flex-shrink: 0;
+}
+
+/* Empty states read as a friendly card, not a void */
+.empty {
+  border: 1px dashed var(--line); border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.015);
+}
+
+/* Modal close button: tactile */
+.modal-x { transition: border-color 0.15s, transform 0.15s; }
+.modal-x:hover { transform: rotate(90deg); }
+
+/* Scan stage: soft inner vignette so the video reads as a viewfinder */
+.scan-stage { box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.45); }
+.scan-stage video { border-radius: inherit; }
+
+/* Shutter: white ring with an inner dot, like a real camera */
+.shutter { position: relative; }
+.shutter::after {
+  content: ""; position: absolute; inset: 5px; border-radius: 50%;
+  background: #fff; border: 2px solid rgba(0, 0, 0, 0.18);
+  transition: transform 0.12s ease;
+}
+.shutter:active::after { transform: scale(0.9); }
+
+/* Tray: reading chips shimmer while the scan is identified */
+.tray-chip.reading img {
+  background: linear-gradient(90deg, #0a0d16 25%, #1a2132 50%, #0a0d16 75%);
+  background-size: 200% 100%; animation: sk 1.1s infinite;
+}
+.tray-chip { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25); }
+.tray-chip img { width: 38px; height: 53px; }
+
+/* Quick-stats sheet: market price chip pops */
+.chip-sheet-card .price-chip.market {
+  background: linear-gradient(135deg, rgba(54, 211, 153, 0.1), transparent), var(--panel);
+}
+
+/* Detail price chips: hairline accent on top */
+.price-chip { border-top: 2px solid var(--line); }
+.price-chip.market { border-top-color: rgba(54, 211, 153, 0.6); }
+
+/* User pill: soft glow on hover */
+.user-pill:hover { box-shadow: 0 4px 14px rgba(255, 210, 63, 0.15); }
+
+/* Desktop tabs: gentle lift */
+.tab:hover { transform: translateY(-1px); }
+.tab { transition: color 0.15s, background 0.15s, transform 0.15s; }

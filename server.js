@@ -472,6 +472,7 @@ async function aiVision(dataUrl) {
 
 const SPECIES_FILE = () => join(DATA_DIR, "species.json");
 let speciesSet = null;
+let speciesArr = null; // for fuzzy scans
 const normSpecies = (s) => (s || "").toLowerCase().replace(/[^a-z]/g, "");
 
 async function loadSpecies() {
@@ -480,6 +481,7 @@ async function loadSpecies() {
     const cached = JSON.parse(await readFile(SPECIES_FILE(), "utf8"));
     if (Array.isArray(cached) && cached.length > 800) {
       speciesSet = new Set(cached);
+      speciesArr = [...speciesSet];
       return speciesSet;
     }
   } catch { /* no cache yet */ }
@@ -489,12 +491,53 @@ async function loadSpecies() {
     const names = (d.results || []).map((x) => normSpecies(x.name)).filter(Boolean);
     if (names.length > 800) {
       speciesSet = new Set(names);
+      speciesArr = [...speciesSet];
       mkdir(DATA_DIR, { recursive: true })
         .then(() => writeFile(SPECIES_FILE(), JSON.stringify([...speciesSet])))
         .catch(() => {});
       return speciesSet;
     }
   } catch { /* offline — feature quietly disabled */ }
+  return null;
+}
+
+// Levenshtein distance <= 1 (one substitution, insertion or deletion).
+// OCR's classic failure mode is a single wrong character ("Giaceon").
+function editDist1(a, b) {
+  if (a === b) return true;
+  const la = a.length;
+  const lb = b.length;
+  if (Math.abs(la - lb) > 1) return false;
+  let i = 0;
+  let j = 0;
+  let edits = 0;
+  while (i < la && j < lb) {
+    if (a[i] === b[j]) {
+      i++;
+      j++;
+      continue;
+    }
+    if (++edits > 1) return false;
+    if (la === lb) { i++; j++; }
+    else if (la > lb) i++;
+    else j++;
+  }
+  return edits + (la - i) + (lb - j) <= 1;
+}
+
+// Card keywords that must never fuzzy-match a species name.
+const CARD_WORDS = new Set([
+  "basic", "stage", "trainer", "energy", "weakness", "resistance", "retreat",
+  "pokemon", "pokémon", "evolves", "ability", "damage", "attack", "water",
+  "fire", "grass", "psychic", "fighting", "darkness", "metal", "dragon",
+  "fairy", "colorless", "lightning", "illustrator", "rare", "holo",
+]);
+
+function fuzzySpecies(word) {
+  if (!speciesArr || word.length < 5 || CARD_WORDS.has(word)) return null;
+  for (const sp of speciesArr) {
+    if (Math.abs(sp.length - word.length) <= 1 && editDist1(word, sp)) return sp;
+  }
   return null;
 }
 
@@ -536,6 +579,23 @@ async function detectSpecies(text) {
       const glued = w1.match(/^([a-z'.-]+?)(ex|gx|vmax|vstar|vunion|v)$/);
       if (glued && glued[1].length >= 4 && set.has(glued[1])) {
         return { species: glued[1], name: `${cap(glued[1])} ${fixSuffix(glued[2])}` };
+      }
+    }
+  }
+
+  // Second pass: no exact hit anywhere, so allow a single OCR misread
+  // ("Giaceon" → "glaceon"). Only the top lines, where the name lives.
+  for (const line of lines.slice(0, 8)) {
+    if (/evolves|abilit/i.test(line)) continue;
+    for (const raw of line.split(/[^A-Za-z'’.-]+/)) {
+      const w = normSpecies(raw);
+      let hit = fuzzySpecies(w);
+      if (!hit) {
+        const glued = w.match(/^([a-z'.-]+?)(ex|gx|vmax|vstar|vunion|v)$/);
+        if (glued) hit = fuzzySpecies(glued[1]);
+        if (hit) return { species: hit, name: `${cap(hit)} ${fixSuffix(glued[2])}` };
+      } else {
+        return { species: hit, name: cap(hit) };
       }
     }
   }
