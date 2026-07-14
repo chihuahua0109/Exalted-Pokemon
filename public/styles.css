@@ -378,6 +378,9 @@ body {
 .conf.lo { background: rgba(255,107,107,0.18); color: var(--red); }
 .scan-edit { display: flex; gap: 8px; margin-top: 4px; }
 .scan-edit input { flex: 1; }
+/* Beat the mobile `.filter-input { min-width: 100% }` rule — inside a flex row
+   that rule forces the input wider than the screen and offsets the sheet. */
+.scan-edit .filter-input { min-width: 0; }
 
 /* ----- Scanned cards tray ----- */
 .scan-tray {
@@ -426,12 +429,15 @@ body {
 .chip-sheet-backdrop { position: absolute; inset: 0; background: rgba(5,7,14,0.65); backdrop-filter: blur(3px); }
 .chip-sheet-card {
   position: absolute; left: 50%; bottom: 0; transform: translateX(-50%);
-  width: min(520px, 100%); max-height: 78vh; overflow-y: auto;
+  width: min(520px, 100%); max-height: 78vh; overflow-y: auto; overflow-x: hidden;
   background: var(--bg-2); border: 1px solid var(--line); border-bottom: none;
   border-radius: 22px 22px 0 0; padding: 10px 18px calc(18px + env(safe-area-inset-bottom));
   box-shadow: 0 -12px 40px rgba(0,0,0,0.5);
   animation: sheet-up 0.28s cubic-bezier(0.2, 0.9, 0.3, 1);
+  overscroll-behavior: contain;
 }
+.chip-sheet-card .sheet-title { min-width: 0; }
+.sheet-actions .btn { min-width: 0; padding: 11px 8px; justify-content: center; }
 @keyframes sheet-up { from { transform: translate(-50%, 40px); opacity: 0.4; } }
 .sheet-grip { width: 40px; height: 4px; border-radius: 4px; background: var(--line); margin: 2px auto 14px; }
 .sheet-top { display: flex; gap: 14px; align-items: flex-start; }

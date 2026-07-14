@@ -296,7 +296,14 @@ function mergeParsed(fullParsed, nameParsed, numParsed) {
   const number = numParsed.number || fullParsed.number || nameParsed.number || null;
   const hp = fullParsed.hp || nameParsed.hp || numParsed.hp || null;
 
-  return { name, number, hp };
+  // Pool every other name guess as a fallback for weak matches.
+  const altNames = [
+    ...nameCands.slice(1),
+    ...(nameParsed.altNames || []),
+    ...(fullParsed.altNames || []),
+  ].filter((n, i, arr) => n && n !== name && arr.indexOf(n) === i);
+
+  return { name, number, hp, altNames };
 }
 
 const STAGE_RE =
@@ -329,6 +336,10 @@ function parseCardText(text) {
     // Require at least one word with 4+ letters (filters garbage like "Dil", "am nf", "LY We").
     const hasRealWord = words.some((w) => (w.match(/[A-Za-z]/g) || []).length >= 4);
     if (letters < 3 || !hasRealWord || words.length > 5 || STAGE_RE.test(l) || NOISE_RE.test(l)) return;
+    // An ability's NAME sits next to the "Ability" label (e.g. "Ability  Damp").
+    // Never treat it (or the line right after the label) as the card name.
+    if (/\babilit/i.test(line)) return;
+    if (idx > 0 && /\babilit/i.test(lines[idx - 1])) return;
     let score = 0;
     // Position: name appears early.
     if (idx < 8) score += Math.max(0, 8 - idx);
@@ -348,17 +359,25 @@ function parseCardText(text) {
     cands.push({ text: l, score });
   });
   cands.sort((a, b) => b.score - a.score);
-  let name = (cands[0]?.text || "")
-    .replace(/[^A-Za-z0-9'’.\- ]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  // OCR often glues the suffix onto the name (e.g. "Pikachuex", "CharizardVMAX").
-  // Re-introduce the space so the TCGplayer search matches the printed form.
-  name = name.replace(
-    /([a-z])(ex|EX|GX|V|VMAX|VSTAR|VUNION)\b/,
-    (_, base, suf) => `${base} ${suf.toLowerCase() === "ex" ? "ex" : suf.toUpperCase()}`
-  );
-  return { name, number, hp };
+  const clean = (s) => {
+    const n = (s || "")
+      .replace(/[^A-Za-z0-9'’.\- ]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    // OCR often glues the suffix onto the name (e.g. "Pikachuex", "CharizardVMAX").
+    // Re-introduce the space so the TCGplayer search matches the printed form.
+    return n.replace(
+      /([a-z])(ex|EX|GX|V|VMAX|VSTAR|VUNION)\b/,
+      (_, base, suf) => `${base} ${suf.toLowerCase() === "ex" ? "ex" : suf.toUpperCase()}`
+    );
+  };
+  const name = clean(cands[0]?.text);
+  // Runner-up guesses, tried when the top pick produces a weak match.
+  const altNames = cands
+    .slice(1, 4)
+    .map((c) => clean(c.text))
+    .filter((n) => n && n !== name);
+  return { name, number, hp, altNames };
 }
 
 /* ---- Optional AI vision (used when a key is configured) ---- */
@@ -556,7 +575,28 @@ app.post("/api/scan", async (req, res) => {
       }
       if (products.length) break;
     }
-    const ranked = rankProducts(products, parsed);
+    let ranked = rankProducts(products, parsed);
+
+    // Weak match? The "name" was probably an ability/attack or OCR garbage.
+    // Retry with the runner-up name guesses and keep whichever scores best.
+    if (ranked.confidence < 0.35 && parsed.altNames?.length) {
+      for (const alt of parsed.altNames.slice(0, 2)) {
+        try {
+          const { products: altProducts } = await tcgSearch(
+            parsed.number ? `${alt} ${parsed.number}` : alt,
+            { size: 24 }
+          );
+          if (!altProducts.length) continue;
+          const altRanked = rankProducts(altProducts, { ...parsed, name: alt });
+          if (altRanked.confidence > ranked.confidence + 0.1) {
+            ranked = altRanked;
+            parsed.name = alt;
+          }
+        } catch { /* alt guesses are best-effort */ }
+        if (ranked.confidence >= 0.5) break;
+      }
+    }
+
     res.json({ ...parsed, source, text, rateLimited, products: ranked.products, confidence: ranked.confidence });
   } catch (err) {
     res.status(502).json({ error: err.message });

@@ -905,19 +905,24 @@ const cam = {
 
 $("#open-camera").addEventListener("click", openCamera);
 
-/* ----- Auto-capture: time-based countdown once a card is detected ----- */
+/* ----- Auto-capture: fires only when an actual card outline is detected ----- */
 const STAGE_ASPECT = 3 / 4;
 const GUIDE_INSET_X = 0.11;
 const GUIDE_INSET_Y = 0.06;
-const CARD_HOLD_MS = 2800; // capture after this many ms of card-in-frame
+const CARD_HOLD_MS = 700; // steady card-in-frame time before the shot
 
+// Detection canvas matches the guide's portrait shape so the card's four
+// edges land in predictable border bands.
+const DET_W = 96;
+const DET_H = 128;
 const det = document.createElement("canvas");
-det.width = 160;
-det.height = 160;
+det.width = DET_W;
+det.height = DET_H;
 const dctx = det.getContext("2d", { willReadFrequently: true });
 let detTimer = null;
 let cardVisibleMs = 0;
 let lastDetTick = 0;
+let prevGray = null; // previous frame, for motion estimation
 // After a capture, auto mode waits for the frame to clear (card swapped)
 // before it can fire again — prevents double-scanning the same card.
 let autoArmed = true;
@@ -978,50 +983,106 @@ function captureFromGuide() {
   return c.toDataURL("image/jpeg", 0.95);
 }
 
-// Analyze the guide region for a card that actually FILLS the frame.
-// Returns { density, coverage }:
-//   density  – overall fraction of edge pixels (busy-ness)
-//   coverage – fraction of a 3x3 grid of cells that are "busy". A card lined up
-//              inside the frame lights up all 9 cells; a small/partial card or a
-//              single busy spot on the background does not.
+// Analyze the guide region for an actual CARD:
+//   sides   – how many of the card's 4 physical edges are visible as long
+//             straight contrast lines near the guide border (0-4). A floor,
+//             table or random scene almost never produces all four.
+//   density – edge busy-ness of the interior (artwork/text).
+//   motion  – mean frame-to-frame pixel change; low = held steady.
 function analyzeFrame() {
   const v = cam.video;
-  if (!v.videoWidth) return { density: 0, coverage: 0 };
+  if (!v.videoWidth) return null;
   const g = guideRegion(v);
-  dctx.drawImage(v, g.x, g.y, g.w, g.h, 0, 0, det.width, det.height);
-  const { data } = dctx.getImageData(0, 0, det.width, det.height);
-  const W = det.width;
-  const H = det.height;
+  // Sample slightly beyond the guide so a card sitting a bit outside the
+  // lines still has its edges inside the sampled region.
+  const mx = g.w * 0.08;
+  const my = g.h * 0.08;
+  const sx = Math.max(0, g.x - mx);
+  const sy = Math.max(0, g.y - my);
+  const sw = Math.min(v.videoWidth - sx, g.w + 2 * mx);
+  const sh = Math.min(v.videoHeight - sy, g.h + 2 * my);
+  dctx.drawImage(v, sx, sy, sw, sh, 0, 0, DET_W, DET_H);
+  const { data } = dctx.getImageData(0, 0, DET_W, DET_H);
 
-  const cellEdges = new Array(9).fill(0);
-  const cellTotal = new Array(9).fill(0);
-  let edges = 0;
-  const total = (W - 2) * (H - 2);
-  const cw = W / 3;
-  const ch = H / 3;
+  // Grayscale + motion vs the previous frame.
+  const gray = new Float32Array(DET_W * DET_H);
+  for (let i = 0, p = 0; i < gray.length; i++, p += 4) {
+    gray[i] = 0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2];
+  }
+  let motion = 255;
+  if (prevGray) {
+    let sum = 0;
+    let n = 0;
+    for (let i = 0; i < gray.length; i += 4) {
+      sum += Math.abs(gray[i] - prevGray[i]);
+      n++;
+    }
+    motion = sum / n;
+  }
+  prevGray = gray;
 
-  for (let y = 1; y < H - 1; y++) {
-    const cellRow = Math.min(2, Math.floor(y / ch));
-    for (let x = 1; x < W - 1; x++) {
-      const i = (y * W + x) * 4;
-      const lum = (data[i] + data[i + 1] + data[i + 2]) / 3;
-      const r = (data[i + 4] + data[i + 5] + data[i + 6]) / 3;
-      const b = (data[i + W * 4] + data[i + W * 4 + 1] + data[i + W * 4 + 2]) / 3;
-      const cell = cellRow * 3 + Math.min(2, Math.floor(x / cw));
-      cellTotal[cell]++;
-      if (Math.abs(lum - r) + Math.abs(lum - b) > 28) {
-        edges++;
-        cellEdges[cell]++;
+  const T = 26; // gradient threshold for a "hard" edge
+  const bx = Math.round(DET_W * 0.2); // side band widths
+  const by = Math.round(DET_H * 0.2);
+
+  // For each border band, measure what fraction of its length crosses a strong
+  // perpendicular gradient — a physical card edge forms a near-continuous line.
+  let topHit = 0;
+  let botHit = 0;
+  for (let x = 1; x < DET_W - 1; x++) {
+    for (let y = 1; y < by; y++) {
+      if (Math.abs(gray[(y + 1) * DET_W + x] - gray[(y - 1) * DET_W + x]) > T) {
+        topHit++;
+        break;
+      }
+    }
+    for (let y = DET_H - by; y < DET_H - 1; y++) {
+      if (Math.abs(gray[(y + 1) * DET_W + x] - gray[(y - 1) * DET_W + x]) > T) {
+        botHit++;
+        break;
       }
     }
   }
-
-  // A cell counts as "busy" when a meaningful share of it has edges.
-  let busyCells = 0;
-  for (let c = 0; c < 9; c++) {
-    if (cellTotal[c] && cellEdges[c] / cellTotal[c] > 0.03) busyCells++;
+  let leftHit = 0;
+  let rightHit = 0;
+  for (let y = 1; y < DET_H - 1; y++) {
+    for (let x = 1; x < bx; x++) {
+      if (Math.abs(gray[y * DET_W + x + 1] - gray[y * DET_W + x - 1]) > T) {
+        leftHit++;
+        break;
+      }
+    }
+    for (let x = DET_W - bx; x < DET_W - 1; x++) {
+      if (Math.abs(gray[y * DET_W + x + 1] - gray[y * DET_W + x - 1]) > T) {
+        rightHit++;
+        break;
+      }
+    }
   }
-  return { density: edges / total, coverage: busyCells / 9 };
+  const fr = [
+    topHit / (DET_W - 2),
+    botHit / (DET_W - 2),
+    leftHit / (DET_H - 2),
+    rightHit / (DET_H - 2),
+  ];
+  const sides = fr.filter((f) => f > 0.55).length;
+
+  // Interior busy-ness (central 60%) — card faces have artwork and text.
+  let edges = 0;
+  let total = 0;
+  const ix0 = Math.round(DET_W * 0.2);
+  const ix1 = DET_W - ix0;
+  const iy0 = Math.round(DET_H * 0.2);
+  const iy1 = DET_H - iy0;
+  for (let y = iy0; y < iy1; y += 2) {
+    for (let x = ix0; x < ix1; x += 2) {
+      total++;
+      const gx = Math.abs(gray[y * DET_W + x + 1] - gray[y * DET_W + x - 1]);
+      const gy = Math.abs(gray[(y + 1) * DET_W + x] - gray[(y - 1) * DET_W + x]);
+      if (gx + gy > T) edges++;
+    }
+  }
+  return { sides, density: edges / Math.max(1, total), motion };
 }
 
 function setHint(text, good) {
@@ -1038,41 +1099,51 @@ function detLoop() {
   const elapsed = lastDetTick ? Math.min(now - lastDetTick, 300) : 110;
   lastDetTick = now;
 
-  const { density, coverage } = analyzeFrame();
-  // A card lined up in the frame is busy AND fills most of the guide. This
-  // rejects empty backgrounds (low density) and partial/far cards (low coverage).
-  const somethingThere = density > 0.04;
-  const cardFillsFrame = density > 0.05 && coverage >= 7 / 9;
+  const a = analyzeFrame();
+  if (!a) {
+    detTimer = setTimeout(detLoop, 110);
+    return;
+  }
+  // A real card shows at least 3 of its 4 physical edges as straight contrast
+  // lines near the guide, plus a busy interior (artwork/text). Floors, tables
+  // and random backgrounds don't produce that outline.
+  const cardDetected = a.sides >= 3 && a.density > 0.03;
+  const partiallyIn = a.sides >= 1 && a.density > 0.03;
+  const steady = a.motion < 8;
 
   const guide = $("#scan-guide");
   const ring = $("#scan-ring");
   guide.classList.remove("detect", "locking");
 
-  if (!cardFillsFrame) {
+  if (!cardDetected) {
     cardVisibleMs = 0;
     ring.classList.remove("show");
     // Re-arm auto capture once the frame has been clear for a moment
     // (i.e. the previous card was taken away).
     frameClearMs += elapsed;
     if (frameClearMs > 500) autoArmed = true;
-    // Distinguish "nothing here" from "card not fully in frame" so the user
-    // knows to move the card to fill the guide.
-    setHint(somethingThere ? "Fit the whole card in the frame…" : "Point at a card…", false);
+    setHint(partiallyIn ? "Fit the whole card in the frame…" : "Point at a card…", false);
   } else if (!autoArmed) {
     // Same card still sitting in frame right after a capture.
     frameClearMs = 0;
     ring.classList.remove("show");
     setHint("Captured ✓ — swap to the next card", true);
+  } else if (!steady) {
+    // Card found but the phone/card is moving — wait, don't reset progress hard.
+    frameClearMs = 0;
+    cardVisibleMs = Math.max(0, cardVisibleMs - elapsed / 2);
+    guide.classList.add("detect");
+    ring.classList.remove("show");
+    setHint("Card detected — hold still…", true);
   } else {
     frameClearMs = 0;
     cardVisibleMs += elapsed;
     const progress = Math.min(100, Math.round((cardVisibleMs / CARD_HOLD_MS) * 100));
-    const secsLeft = Math.max(0, Math.ceil((CARD_HOLD_MS - cardVisibleMs) / 1000));
 
     guide.classList.add("locking");
     ring.classList.add("show");
     ring.style.setProperty("--p", progress);
-    setHint(secsLeft > 0 ? `Hold still… ${secsLeft}s` : "Scanning…", true);
+    setHint("Card detected — capturing…", true);
 
     if ($("#auto-capture").checked && cardVisibleMs >= CARD_HOLD_MS) {
       captureToBatch();
@@ -1088,6 +1159,7 @@ function startDetect() {
   lastDetTick = 0;
   autoArmed = true;
   frameClearMs = 0;
+  prevGray = null;
   $("#scan-guide").classList.remove("hidden");
   detLoop();
 }
@@ -1468,11 +1540,21 @@ async function addCapture(imageUrl) {
   chip.products = res.products || [];
   chip.confidence = res.confidence ?? null;
   chip.rateLimited = !!res.rateLimited;
-  chip.chosen = chip.products[0] || null;
+  // Only auto-accept a match the recognizer is reasonably sure about.
+  // A near-zero score means "best of a bad search" (e.g. an ability name was
+  // read as the card name) — make the user confirm instead of guessing wrong.
+  const sure = chip.confidence == null || chip.confidence >= 0.25;
+  chip.chosen = sure ? chip.products[0] || null : null;
   chip.status = chip.chosen ? "done" : "error";
   renderTray();
   if (!chip.chosen) {
-    toast(chip.rateLimited ? "Reader busy — tap the card to search by name" : "No match — tap the card to fix it");
+    toast(
+      chip.rateLimited
+        ? "Reader busy — tap the card to search by name"
+        : chip.products.length
+        ? "Not sure about this one — tap it to confirm"
+        : "No match — tap the card to fix it"
+    );
   }
 }
 
@@ -1492,12 +1574,13 @@ function chipHTML(c) {
       </div>`;
   }
   if (!c.chosen) {
+    const guess = c.products?.[0];
     return `
       <div class="tray-chip nomatch" data-chip="${c.id}">
         <img src="${c.thumb}" alt="" />
         <div class="chip-body">
-          <div class="chip-name">No match</div>
-          <div class="chip-meta">tap to fix</div>
+          <div class="chip-name">${guess ? esc(guess.name) + "?" : "No match"}</div>
+          <div class="chip-meta">tap to confirm</div>
         </div>
         <button class="chip-x" data-chipdel="${c.id}" aria-label="Remove">×</button>
       </div>`;
@@ -1673,6 +1756,7 @@ function renderChipSheet(c) {
       c.products = products;
       c.chosen = products[0] || null;
       c.status = c.chosen ? "done" : "error";
+      c.confidence = null;
       renderTray();
       renderChipSheet(c);
     } catch {
@@ -1689,6 +1773,7 @@ function renderChipSheet(c) {
       if (!alt) return;
       c.chosen = alt;
       c.status = "done";
+      c.confidence = null; // user confirmed it — drop the low-match badge
       renderTray();
       renderChipSheet(c);
     })
