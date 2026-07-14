@@ -1,13 +1,15 @@
 # Codemagic CI/CD — Kairos Pokemon → TestFlight (free individual plan).
 #
-# Env vars in the "kairos" group (all Secure):
-#   APP_STORE_CONNECT_ISSUER_ID      — Issuer ID
-#   APP_STORE_CONNECT_KEY_IDENTIFIER — Key ID (538TGDU6JD)
-#   APP_STORE_CONNECT_PRIVATE_KEY    — full .p8 contents
-#   APPLE_TEAM_ID                    — 10-char Team ID
+# Env vars in the "kairos" group in Codemagic (all marked Secure):
+#   APP_STORE_CONNECT_ISSUER_ID      — Issuer ID from App Store Connect
+#   APP_STORE_CONNECT_KEY_IDENTIFIER — Key ID of the .p8 API key
+#   APP_STORE_CONNECT_PRIVATE_KEY    — full contents of the .p8 API key file
+#   CERTIFICATE_PRIVATE_KEY          — RSA private key that backs the iOS
+#                                      Distribution certificate (kairos_cert_key.pem)
 #
-# IMPORTANT: the API key must have Admin role (not App Manager) so Codemagic
-# can create the iOS Distribution certificate and App Store profile.
+# The App Store Connect API auth is read from those env vars automatically by
+# the codemagic-cli-tools. The certificate key lets the build create/reuse the
+# distribution certificate itself — no Xcode cloud signing, no Admin key needed.
 
 workflows:
   ios-testflight:
@@ -46,38 +48,20 @@ workflows:
           /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string \"$PHOTO\"" "$PLIST" \
             || /usr/libexec/PlistBuddy -c "Set :NSPhotoLibraryUsageDescription \"$PHOTO\"" "$PLIST"
 
-      - name: Create/fetch signing certificate & profile
+      - name: Fetch or create signing certificate & profile
         script: |
-          echo "$APP_STORE_CONNECT_PRIVATE_KEY" > /tmp/AuthKey.p8
-          chmod 600 /tmp/AuthKey.p8
-
-          ASC="--issuer-id $APP_STORE_CONNECT_ISSUER_ID --key-id $APP_STORE_CONNECT_KEY_IDENTIFIER --private-key @file:/tmp/AuthKey.p8"
-
-          # Create iOS Distribution cert if none exists (needs Admin API key).
-          if ! app-store-connect certificates list --type IOS_DISTRIBUTION $ASC --limit 1 2>/dev/null | grep -q .; then
-            echo "Creating iOS Distribution certificate..."
-            app-store-connect certificates create --type IOS_DISTRIBUTION --certificate-common-name "Kairos Pokemon Distribution" $ASC
-          fi
-
-          # Fetch or create App Store provisioning profile for our bundle ID.
+          keychain initialize
           app-store-connect fetch-signing-files "$BUNDLE_ID" \
             --platform IOS \
             --type IOS_APP_STORE \
-            $ASC \
-            --create \
-            --verbose
-
-          keychain initialize
+            --certificate-key=@env:CERTIFICATE_PRIVATE_KEY \
+            --create
           keychain add-certificates
           xcode-project use-profiles
 
       - name: Auto-increment build number
         script: |
-          LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APP_ID" \
-            --issuer-id "$APP_STORE_CONNECT_ISSUER_ID" \
-            --key-id "$APP_STORE_CONNECT_KEY_IDENTIFIER" \
-            --private-key @file:/tmp/AuthKey.p8 \
-            2>/dev/null || echo 0)
+          LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APP_ID" 2>/dev/null || echo 0)
           cd ios/App
           agvtool new-version -all $((LATEST + 1))
 
