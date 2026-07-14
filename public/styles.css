@@ -196,9 +196,10 @@ body {
 .card:active { transform: scale(0.98); }
 .card-img-wrap {
   aspect-ratio: 367 / 512; background: #0a0d16 center/cover no-repeat;
-  display: grid; place-items: center; position: relative;
+  display: grid; place-items: center; position: relative; overflow: hidden;
 }
-.card-img-wrap img { width: 100%; height: 100%; object-fit: contain; }
+.card-img-wrap img { width: 100%; height: 100%; object-fit: contain; transition: transform 0.25s ease; }
+.card:hover .card-img-wrap img { transform: scale(1.04); }
 .card-qty-badge {
   position: absolute; top: 8px; right: 8px;
   background: rgba(12,15,26,0.9); border: 1px solid var(--line);
@@ -245,6 +246,8 @@ body {
 @keyframes modal-in { from { opacity: 0; transform: translateY(16px) scale(0.98); } }
 .modal-card.detail { width: min(880px, 100%); }
 .modal-card.scan { width: min(560px, 100%); padding: 24px; overflow-anchor: none; }
+.modal-card.scan h2 { margin: 0 0 4px; font-size: 22px; }
+.modal-card.scan .scan-sub { margin: 2px 0 0; }
 .modal-x {
   position: absolute; top: 12px; right: 14px; z-index: 3;
   background: var(--panel); border: 1px solid var(--line); color: var(--text);
@@ -336,8 +339,9 @@ body {
 }
 .scan-hint {
   position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
-  background: rgba(5,7,14,0.8); color: var(--text); font-size: 12.5px; font-weight: 600;
-  padding: 6px 14px; border-radius: 20px; border: 1px solid var(--line); white-space: nowrap;
+  background: rgba(5,7,14,0.85); color: var(--text); font-size: 12.5px; font-weight: 600;
+  padding: 6px 14px; border-radius: 20px; border: 1px solid var(--line);
+  max-width: 94%; text-align: center; backdrop-filter: blur(4px);
 }
 .scan-hint.good { color: var(--green); border-color: rgba(54,211,153,0.5); }
 .auto-toggle {
@@ -475,8 +479,9 @@ body {
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   background: var(--panel-2); border: 1px solid var(--accent); color: var(--text);
-  padding: 13px 22px; border-radius: 12px; box-shadow: var(--shadow); z-index: 90;
+  padding: 13px 22px; border-radius: 14px; box-shadow: 0 8px 28px rgba(0,0,0,0.5); z-index: 90;
   font-size: 14px; font-weight: 600; transition: opacity 0.25s, transform 0.25s;
+  max-width: min(92vw, 480px); text-align: center;
 }
 .toast.hidden { opacity: 0; pointer-events: none; transform: translate(-50%, 12px); }
 
@@ -522,17 +527,20 @@ body {
 .bn-item {
   border: none; background: transparent; color: var(--muted);
   display: flex; flex-direction: column; align-items: center; gap: 2px;
-  font-size: 11px; font-weight: 600; cursor: pointer; padding: 6px 14px; border-radius: 12px;
-  flex: 1;
+  font-size: 11px; font-weight: 600; cursor: pointer; padding: 6px 14px; border-radius: 14px;
+  flex: 1; transition: color 0.18s, background 0.18s, transform 0.12s;
 }
-.bn-icon { font-size: 21px; line-height: 1; }
-.bn-item.active { color: var(--accent); }
+.bn-item:active { transform: scale(0.94); }
+.bn-icon { font-size: 21px; line-height: 1; transition: transform 0.18s; }
+.bn-item.active { color: var(--accent); background: rgba(255, 210, 63, 0.1); }
+.bn-item.active .bn-icon { transform: translateY(-1px); }
 .bn-item.bn-fab .bn-icon {
   background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #1a1300;
   width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center;
   margin-top: -22px; box-shadow: 0 6px 16px rgba(255,178,32,0.4); font-weight: 800;
   border: 4px solid var(--bg);
 }
+.bn-item.bn-fab { background: transparent; }
 .bn-item.bn-fab.active .bn-icon { transform: scale(1.05); }
 
 /* Market view */

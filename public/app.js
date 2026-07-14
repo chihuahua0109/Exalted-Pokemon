@@ -1025,47 +1025,45 @@ function analyzeFrame() {
   const bx = Math.round(DET_W * 0.2); // side band widths
   const by = Math.round(DET_H * 0.2);
 
-  // For each border band, measure what fraction of its length crosses a strong
-  // perpendicular gradient — a physical card edge forms a near-continuous line.
-  let topHit = 0;
-  let botHit = 0;
+  // A physical card edge is a STRAIGHT line: strong gradients at the same row
+  // (top/bottom) or column (left/right) across most of the band. Busy textures
+  // (blankets, wood grain) scatter their gradients across the whole band and
+  // never line up, so scoring the best 3-row/col window rejects them.
+  const rowHitsTop = new Float32Array(by);
+  const rowHitsBot = new Float32Array(by);
   for (let x = 1; x < DET_W - 1; x++) {
     for (let y = 1; y < by; y++) {
-      if (Math.abs(gray[(y + 1) * DET_W + x] - gray[(y - 1) * DET_W + x]) > T) {
-        topHit++;
-        break;
-      }
-    }
-    for (let y = DET_H - by; y < DET_H - 1; y++) {
-      if (Math.abs(gray[(y + 1) * DET_W + x] - gray[(y - 1) * DET_W + x]) > T) {
-        botHit++;
-        break;
-      }
+      if (Math.abs(gray[(y + 1) * DET_W + x] - gray[(y - 1) * DET_W + x]) > T) rowHitsTop[y]++;
+      const yy = DET_H - 1 - y;
+      if (Math.abs(gray[(yy + 1) * DET_W + x] - gray[(yy - 1) * DET_W + x]) > T) rowHitsBot[y]++;
     }
   }
-  let leftHit = 0;
-  let rightHit = 0;
+  const colHitsL = new Float32Array(bx);
+  const colHitsR = new Float32Array(bx);
   for (let y = 1; y < DET_H - 1; y++) {
     for (let x = 1; x < bx; x++) {
-      if (Math.abs(gray[y * DET_W + x + 1] - gray[y * DET_W + x - 1]) > T) {
-        leftHit++;
-        break;
-      }
-    }
-    for (let x = DET_W - bx; x < DET_W - 1; x++) {
-      if (Math.abs(gray[y * DET_W + x + 1] - gray[y * DET_W + x - 1]) > T) {
-        rightHit++;
-        break;
-      }
+      if (Math.abs(gray[y * DET_W + x + 1] - gray[y * DET_W + x - 1]) > T) colHitsL[x]++;
+      const xx = DET_W - 1 - x;
+      if (Math.abs(gray[y * DET_W + xx + 1] - gray[y * DET_W + xx - 1]) > T) colHitsR[x]++;
     }
   }
+  // Best 3-wide window = the straightest candidate line in the band
+  // (3 wide tolerates a slightly tilted card).
+  const lineScore = (hits, len) => {
+    let best = 0;
+    for (let i = 1; i < hits.length; i++) {
+      const w = hits[i] + (hits[i - 1] || 0) + (i + 1 < hits.length ? hits[i + 1] : 0);
+      if (w > best) best = w;
+    }
+    return best / len;
+  };
   const fr = [
-    topHit / (DET_W - 2),
-    botHit / (DET_W - 2),
-    leftHit / (DET_H - 2),
-    rightHit / (DET_H - 2),
+    lineScore(rowHitsTop, DET_W - 2),
+    lineScore(rowHitsBot, DET_W - 2),
+    lineScore(colHitsL, DET_H - 2),
+    lineScore(colHitsR, DET_H - 2),
   ];
-  const sides = fr.filter((f) => f > 0.55).length;
+  const sides = fr.filter((f) => f > 0.6).length;
 
   // Interior busy-ness (central 60%) — card faces have artwork and text.
   let edges = 0;

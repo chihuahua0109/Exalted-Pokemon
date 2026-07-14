@@ -465,6 +465,85 @@ async function aiVision(dataUrl) {
   return null;
 }
 
+/* ---- Species dictionary (all Pokémon names) ---- */
+// Knowing every species name turns "which card is this" from guesswork into a
+// lookup: if any OCR line contains a real species, that's the card's Pokémon.
+// Fetched once from PokeAPI and cached (memory + disk).
+
+const SPECIES_FILE = () => join(DATA_DIR, "species.json");
+let speciesSet = null;
+const normSpecies = (s) => (s || "").toLowerCase().replace(/[^a-z]/g, "");
+
+async function loadSpecies() {
+  if (speciesSet) return speciesSet;
+  try {
+    const cached = JSON.parse(await readFile(SPECIES_FILE(), "utf8"));
+    if (Array.isArray(cached) && cached.length > 800) {
+      speciesSet = new Set(cached);
+      return speciesSet;
+    }
+  } catch { /* no cache yet */ }
+  try {
+    const r = await fetch("https://pokeapi.co/api/v2/pokemon-species?limit=2000");
+    const d = await r.json();
+    const names = (d.results || []).map((x) => normSpecies(x.name)).filter(Boolean);
+    if (names.length > 800) {
+      speciesSet = new Set(names);
+      mkdir(DATA_DIR, { recursive: true })
+        .then(() => writeFile(SPECIES_FILE(), JSON.stringify([...speciesSet])))
+        .catch(() => {});
+      return speciesSet;
+    }
+  } catch { /* offline — feature quietly disabled */ }
+  return null;
+}
+
+const NAME_SUFFIX_RE = /^(ex|gx|v|vmax|vstar|vunion)$/i;
+
+// Find the first real species name in the OCR text (top lines first — that's
+// where the card name lives). Returns { species, name } where name includes
+// any suffix printed after it (e.g. "Glaceon V").
+async function detectSpecies(text) {
+  const set = await loadSpecies();
+  if (!set || !text) return null;
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    // "Evolves from Eevee" and ability rows name OTHER Pokémon — skip them.
+    if (/evolves|abilit/i.test(line)) continue;
+    const words = line.split(/[^A-Za-z'’.-]+/).filter((w) => w.length >= 2);
+    for (let j = 0; j < words.length; j++) {
+      const w1 = normSpecies(words[j]);
+      if (!w1) continue;
+      const w2 = j + 1 < words.length ? w1 + normSpecies(words[j + 1]) : null;
+
+      // Two-word species ("Tapu Koko"), single word, or a glued suffix
+      // ("GlaceonV", "CharizardEX") — OCR produces all three.
+      if (w2 && set.has(w2)) {
+        const next = words[j + 2];
+        const base = `${words[j]} ${words[j + 1]}`;
+        return {
+          species: w2,
+          name: next && NAME_SUFFIX_RE.test(next) ? `${base} ${fixSuffix(next)}` : base,
+        };
+      }
+      if (w1.length >= 4 && set.has(w1)) {
+        const next = words[j + 1];
+        return {
+          species: w1,
+          name: next && NAME_SUFFIX_RE.test(next) ? `${words[j]} ${fixSuffix(next)}` : words[j],
+        };
+      }
+      const glued = w1.match(/^([a-z'.-]+?)(ex|gx|vmax|vstar|vunion|v)$/);
+      if (glued && glued[1].length >= 4 && set.has(glued[1])) {
+        return { species: glued[1], name: `${cap(glued[1])} ${fixSuffix(glued[2])}` };
+      }
+    }
+  }
+  return null;
+}
+const fixSuffix = (s) => (s.toLowerCase() === "ex" ? "ex" : s.toUpperCase());
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
 /* ---- Matching / ranking ---- */
 
 function normName(s) {
@@ -487,6 +566,12 @@ function scoreProduct(p, parsed) {
     const pn = p.number.replace(/\s+/g, "");
     if (pn === num) s += 120;
     else if (pn.split("/")[0].replace(/^0+/, "") === num.split("/")[0].replace(/^0+/, "")) s += 40;
+  }
+  // Species is decisive: a product for a different Pokémon is simply wrong,
+  // no matter how well the number or HP happen to line up.
+  if (parsed.species) {
+    if (normSpecies(p.name).includes(parsed.species)) s += 45;
+    else s -= 70;
   }
   s += nameSim(parsed.name, p.name) * 40;
   // Substring boost — OCR often drops a trailing letter (e.g. "Charizar" instead
@@ -554,6 +639,20 @@ app.post("/api/scan", async (req, res) => {
       }
     }
 
+    // Cross-check against the full Pokémon species list. If a real species
+    // appears in the OCR text, it IS the card's Pokémon — override whatever
+    // line-scoring guessed (fixes e.g. Glaceon V matching as Kyogre).
+    try {
+      const sp = await detectSpecies(text);
+      if (sp) {
+        parsed.species = sp.species;
+        if (!normSpecies(parsed.name).includes(sp.species)) {
+          if (parsed.name) parsed.altNames = [parsed.name, ...(parsed.altNames || [])];
+          parsed.name = sp.name;
+        }
+      }
+    } catch { /* best-effort */ }
+
     let products = [];
     const attempts = [];
     if (parsed.name && parsed.number) attempts.push(`${parsed.name} ${parsed.number}`);
@@ -620,26 +719,53 @@ const SESSIONS_FILE = join(DATA_DIR, "sessions.json");
 const USER_DATA_DIR = join(DATA_DIR, "users");
 
 let mongo = null; // { users, sessions, userdata } collections when connected
+// In-memory session cache. With Mongo connected the DB is the source of truth
+// (read-through on cache miss); without it, a JSON file backs the cache.
+let sessions = {};
+
+async function connectMongo() {
+  const { MongoClient } = await import("mongodb");
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const client = new MongoClient(process.env.MONGODB_URI, {
+        serverSelectionTimeoutMS: 10000,
+      });
+      await client.connect();
+      const mdb = client.db(process.env.MONGODB_DB || "kairos");
+      const m = {
+        users: mdb.collection("users"),
+        sessions: mdb.collection("sessions"),
+        userdata: mdb.collection("userdata"),
+      };
+      await m.users.createIndex({ username: 1 }, { unique: true }).catch(() => {});
+      await m.sessions.createIndex({ token: 1 }, { unique: true }).catch(() => {});
+      await m.userdata.createIndex({ userId: 1 }, { unique: true }).catch(() => {});
+      // Warm the session cache so existing logins survive the restart.
+      for (const s of await m.sessions.find().toArray()) {
+        sessions[s.token] = { userId: s.userId, createdAt: s.createdAt };
+      }
+      mongo = m;
+      console.log("  🗄  MongoDB connected — accounts & collections persist");
+      return;
+    } catch (err) {
+      // Never downgrade silently to wiped-on-restart file storage: keep
+      // retrying in the background until Atlas answers.
+      console.error(`  ⚠ MongoDB connect attempt ${attempt} failed: ${err.message} — retrying in 15s`);
+      await new Promise((r) => setTimeout(r, 15000));
+    }
+  }
+}
+
 if (process.env.MONGODB_URI) {
+  // Give Atlas a moment at boot, but don't block startup forever — the retry
+  // loop keeps going in the background if it's slow.
+  await Promise.race([connectMongo(), new Promise((r) => setTimeout(r, 12000))]);
+}
+if (!mongo) {
   try {
-    const { MongoClient } = await import("mongodb");
-    const client = new MongoClient(process.env.MONGODB_URI, {
-      serverSelectionTimeoutMS: 10000,
-    });
-    await client.connect();
-    const mdb = client.db(process.env.MONGODB_DB || "kairos");
-    mongo = {
-      users: mdb.collection("users"),
-      sessions: mdb.collection("sessions"),
-      userdata: mdb.collection("userdata"),
-    };
-    await mongo.users.createIndex({ username: 1 }, { unique: true }).catch(() => {});
-    await mongo.sessions.createIndex({ token: 1 }, { unique: true }).catch(() => {});
-    await mongo.userdata.createIndex({ userId: 1 }, { unique: true }).catch(() => {});
-    console.log("  🗄  MongoDB connected — accounts & collections persist");
-  } catch (err) {
-    console.error(`  ⚠ MongoDB connection failed (${err.message}); using file storage`);
-    mongo = null;
+    sessions = JSON.parse(readFileSync(SESSIONS_FILE, "utf8"));
+  } catch {
+    sessions = {};
   }
 }
 
@@ -667,24 +793,12 @@ async function addUser(user) {
   await writeFile(USERS_FILE, JSON.stringify(users, null, 2));
 }
 
-// In-memory session cache, backed by Mongo or a JSON file. Tokens have no
-// expiry — "stay logged in" is the point for a personal collection app.
-let sessions = {};
-if (mongo) {
-  for (const s of await mongo.sessions.find().toArray()) {
-    sessions[s.token] = { userId: s.userId, createdAt: s.createdAt };
-  }
-} else {
-  try {
-    sessions = JSON.parse(readFileSync(SESSIONS_FILE, "utf8"));
-  } catch {
-    sessions = {};
-  }
-}
 function addSession(token, userId) {
   sessions[token] = { userId, createdAt: Date.now() };
   if (mongo) {
-    mongo.sessions.insertOne({ token, userId, createdAt: Date.now() }).catch(() => {});
+    mongo.sessions
+      .updateOne({ token }, { $set: { token, userId, createdAt: Date.now() } }, { upsert: true })
+      .catch((e) => console.error("session save failed:", e.message));
   } else {
     persistSessionsFile();
   }
@@ -723,12 +837,27 @@ function tokenFrom(req) {
   const m = h.match(/^Bearer\s+(.+)$/i);
   return m ? m[1] : null;
 }
-function authUserId(req) {
+async function authUserId(req) {
   const t = tokenFrom(req);
-  return t && sessions[t] ? sessions[t].userId : null;
+  if (!t) return null;
+  if (sessions[t]) return sessions[t].userId;
+  // Cache miss — the token may live in Mongo (issued before a restart or by
+  // another instance). Read through so logins survive server restarts.
+  if (mongo) {
+    try {
+      const s = await mongo.sessions.findOne({ token: t });
+      if (s) {
+        sessions[t] = { userId: s.userId, createdAt: s.createdAt };
+        return s.userId;
+      }
+    } catch {
+      /* treat as signed out on DB hiccup */
+    }
+  }
+  return null;
 }
-function requireAuth(req, res, next) {
-  const uid = authUserId(req);
+async function requireAuth(req, res, next) {
+  const uid = await authUserId(req);
   if (!uid) return res.status(401).json({ error: "Sign in required" });
   req.userId = uid;
   next();
@@ -783,6 +912,15 @@ async function migrateLegacy(userId) {
 
 /* ---------------- Auth endpoints ---------------- */
 
+// Storage diagnostics — "mongodb" means accounts/collections truly persist.
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    storage: mongo ? "mongodb" : "file",
+    uptimeSec: Math.round(process.uptime()),
+  });
+});
+
 app.post("/api/auth/register", async (req, res) => {
   const username = String(req.body?.username || "").trim().toLowerCase();
   const password = String(req.body?.password || "");
@@ -826,7 +964,7 @@ app.post("/api/auth/logout", (req, res) => {
 });
 
 app.get("/api/auth/me", async (req, res) => {
-  const uid = authUserId(req);
+  const uid = await authUserId(req);
   if (!uid) return res.status(401).json({ error: "Sign in required" });
   const users = await loadUsers();
   const user = users.find((u) => u.id === uid);
