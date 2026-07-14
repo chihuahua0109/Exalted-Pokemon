@@ -47,6 +47,10 @@ workflows:
             || /usr/libexec/PlistBuddy -c "Set :NSCameraUsageDescription \"$CAM\"" "$PLIST"
           /usr/libexec/PlistBuddy -c "Add :NSPhotoLibraryUsageDescription string \"$PHOTO\"" "$PLIST" \
             || /usr/libexec/PlistBuddy -c "Set :NSPhotoLibraryUsageDescription \"$PHOTO\"" "$PLIST"
+          # Only standard HTTPS is used — marks the build export-compliance exempt
+          # so TestFlight never holds it on the "Missing Compliance" question.
+          /usr/libexec/PlistBuddy -c "Add :ITSAppUsesNonExemptEncryption bool false" "$PLIST" \
+            || /usr/libexec/PlistBuddy -c "Set :ITSAppUsesNonExemptEncryption false" "$PLIST"
 
       - name: Fetch or create signing certificate & profile
         script: |
