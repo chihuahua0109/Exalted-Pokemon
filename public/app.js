@@ -951,68 +951,73 @@ let prevGray = null; // previous frame, for motion estimation
 let autoArmed = true;
 let frameClearMs = 0;
 
-// Map the guide box to source pixels in the video stream.
-function guideRegion(v) {
-  const va = v.videoWidth / v.videoHeight;
-  let sx, sy, sw, sh;
-  if (va > STAGE_ASPECT) {
-    sh = v.videoHeight;
-    sw = sh * STAGE_ASPECT;
-    sx = (v.videoWidth - sw) / 2;
-    sy = 0;
-  } else {
-    sw = v.videoWidth;
-    sh = sw / STAGE_ASPECT;
-    sx = 0;
-    sy = (v.videoHeight - sh) / 2;
-  }
-  return {
-    x: sx + GUIDE_INSET_X * sw,
-    y: sy + GUIDE_INSET_Y * sh,
-    w: sw * (1 - 2 * GUIDE_INSET_X),
-    h: sh * (1 - 2 * GUIDE_INSET_Y),
-  };
+// The TRUE rendered aspect of the stage element. CSS aims for 3:4, but if any
+// rule bends it the guide overlay bends with it — detection and captures must
+// use the real value or everything comes out offset from what's on screen.
+function stageAspect() {
+  const el = document.querySelector(".scan-stage");
+  return el && el.clientWidth && el.clientHeight
+    ? el.clientWidth / el.clientHeight
+    : STAGE_ASPECT;
 }
 
 // The visible area on screen (the `cover`-cropped stage) — what the user sees and
 // lines the card up against. Capturing exactly this makes capture WYSIWYG.
 function visibleRegion(v) {
+  const sa = stageAspect();
   const va = v.videoWidth / v.videoHeight;
   let sx, sy, sw, sh;
-  if (va > STAGE_ASPECT) {
+  if (va > sa) {
     sh = v.videoHeight;
-    sw = sh * STAGE_ASPECT;
+    sw = sh * sa;
     sx = (v.videoWidth - sw) / 2;
     sy = 0;
   } else {
     sw = v.videoWidth;
-    sh = sw / STAGE_ASPECT;
+    sh = sw / sa;
     sx = 0;
     sy = (v.videoHeight - sh) / 2;
   }
   return { x: sx, y: sy, w: sw, h: sh };
 }
 
+// Map the guide box to source pixels in the video stream.
+function guideRegion(v) {
+  const r = visibleRegion(v);
+  return {
+    x: r.x + GUIDE_INSET_X * r.w,
+    y: r.y + GUIDE_INSET_Y * r.h,
+    w: r.w * (1 - 2 * GUIDE_INSET_X),
+    h: r.h * (1 - 2 * GUIDE_INSET_Y),
+  };
+}
+
 function captureFromGuide() {
   const v = cam.video;
   if (!v.videoWidth) return null;
   const stage = visibleRegion(v);
-  // Prefer a crop centered on the card the detector just located — captures
-  // come out tight and centered instead of including the whole background.
-  // Fall back to the full visible stage (manual shutter, stale detection).
-  let r = stage;
   const g = guideRegion(v);
-  if (
-    lastCardBox &&
-    Date.now() - lastCardBox.time < 900 &&
-    lastCardBox.w > g.w * 0.45 &&
-    lastCardBox.h > g.h * 0.45
-  ) {
+
+  // Locate the card RIGHT NOW — a detection from even a few frames ago can be
+  // offset if the phone drifted, and the captured image must match the screen.
+  let box = null;
+  try {
+    const a = analyzeFrame();
+    if (a && a.sides >= 3 && a.hasPair) box = cardBoxFromAnalysis(a);
+  } catch { /* fall back to the last loop detection */ }
+  if (!box && lastCardBox && Date.now() - lastCardBox.time < 500) box = lastCardBox;
+
+  // Crop tight around the card when we know where it is; otherwise take the
+  // full visible stage (manual shutter with no card locked).
+  let r = stage;
+  if (box && box.w > g.w * 0.45 && box.h > g.h * 0.45) {
+    const x = Math.max(0, box.x);
+    const y = Math.max(0, box.y);
     r = {
-      x: Math.max(0, lastCardBox.x),
-      y: Math.max(0, lastCardBox.y),
-      w: Math.min(lastCardBox.w, v.videoWidth - lastCardBox.x),
-      h: Math.min(lastCardBox.h, v.videoHeight - lastCardBox.y),
+      x,
+      y,
+      w: Math.min(box.w, v.videoWidth - x),
+      h: Math.min(box.h, v.videoHeight - y),
     };
   }
   const c = cam.canvas;

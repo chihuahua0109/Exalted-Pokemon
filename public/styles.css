@@ -18,6 +18,9 @@
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
 html, body { overflow-x: hidden; }
+/* iOS paints the safe areas (notch / home bar) and rubber-band overscroll with
+   the <html> background — leaving it unset shows WHITE bars above and below. */
+html { background: var(--bg); }
 body {
   margin: 0;
   font-family: "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
@@ -360,7 +363,15 @@ body {
 
 /* Scan */
 .scan-sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
-.scan-stage { position: relative; background: #05070e; border: 1px solid var(--line); border-radius: 16px; overflow: hidden; aspect-ratio: 3/4; max-height: 46vh; max-height: 46dvh; display: grid; place-items: center; margin: 14px auto; }
+/* The stage must stay EXACTLY 3:4 — capture/detection math and the guide
+   overlay all assume it. Clamp the WIDTH (aspect-ratio then sets the height)
+   instead of max-height, which would silently squash the ratio. */
+.scan-stage {
+  position: relative; background: #05070e; border: 1px solid var(--line);
+  border-radius: 16px; overflow: hidden; aspect-ratio: 3/4;
+  width: min(100%, calc(46vh * 0.75)); width: min(100%, calc(46dvh * 0.75));
+  display: grid; place-items: center; margin: 14px auto;
+}
 .scan-stage video { width: 100%; height: 100%; object-fit: cover; }
 /* Shutter flash */
 .scan-flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; z-index: 3; }
@@ -733,7 +744,7 @@ body {
   .stat-value { font-size: 22px; }
   /* Scan modal: keep stage + tray + shutter on screen together */
   .modal-card.scan { max-height: 94vh; max-height: 94dvh; padding: 20px 16px calc(16px + env(safe-area-inset-bottom)); }
-  .scan-stage { max-height: 38vh; max-height: 38dvh; margin: 12px auto; }
+  .scan-stage { width: min(100%, calc(38vh * 0.75)); width: min(100%, calc(38dvh * 0.75)); margin: 12px auto; }
   /* iOS zooms the whole page when focusing an input smaller than 16px —
      that zoom is what pushed the layout out of frame. Keep inputs at 16px. */
   .filter-input, .select, .search-box input,
