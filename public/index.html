@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, interactive-widget=resizes-content" />
     <title>Kairos Pokémon — Collection &amp; Market Tracker</title>
     <link rel="preconnect" href="https://tcgplayer-cdn.tcgplayer.com" />
     <link rel="stylesheet" href="styles.css" />
@@ -16,8 +16,17 @@
     <link rel="apple-touch-icon" href="icon.svg" />
   </head>
   <body>
+    <!-- SPLASH — visible instantly while the app boots -->
+    <div id="splash">
+      <span class="logo splash-logo">⚡</span>
+      <div class="splash-bar"><i></i></div>
+      <p id="splash-status" class="splash-status"></p>
+    </div>
+
     <!-- AUTH SCREEN (shown when signed out) -->
     <div id="auth-screen" class="auth-screen hidden">
+      <div class="auth-orb a"></div>
+      <div class="auth-orb b"></div>
       <div class="auth-card">
         <div class="auth-brand">
           <span class="logo">⚡</span>
@@ -37,9 +46,13 @@
           </label>
           <label class="auth-field">
             <span>Password</span>
-            <input id="auth-password" name="password" type="password" autocomplete="current-password" placeholder="••••••••" />
+            <span class="auth-pass-wrap">
+              <input id="auth-password" name="password" type="password" autocomplete="current-password" placeholder="••••••••" />
+              <button type="button" class="pass-eye" id="pass-eye" aria-label="Show password">👁</button>
+            </span>
           </label>
           <div id="auth-error" class="auth-error hidden"></div>
+          <div id="auth-wake" class="auth-wake hidden">Waking the server — first login of the day can take ~30 seconds…</div>
           <button class="btn primary auth-submit" id="auth-submit" type="submit">Log in</button>
         </form>
 
@@ -324,8 +337,7 @@
     </nav>
     </div><!-- /#app-root -->
 
-    <!-- Tesseract.js for on-device OCR card recognition -->
-    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    <!-- Tesseract.js (offline OCR fallback) is lazy-loaded by app.js when needed -->
     <script src="config.js"></script>
     <script src="app.js"></script>
     <script>

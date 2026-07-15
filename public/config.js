@@ -10,4 +10,11 @@
     location.protocol === "file:" ||
     (location.hostname === "localhost" && !location.port);
   window.KAIROS_API_BASE = native ? "https://kairos-pokemon.onrender.com" : "";
+  // Start the TLS handshake to the API host immediately on native app launch.
+  if (window.KAIROS_API_BASE) {
+    var l = document.createElement("link");
+    l.rel = "preconnect";
+    l.href = window.KAIROS_API_BASE;
+    document.head.appendChild(l);
+  }
 })();

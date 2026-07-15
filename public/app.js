@@ -44,6 +44,24 @@ function setToken(t) {
   if (t) localStorage.setItem(TOKEN_KEY, t);
   else localStorage.removeItem(TOKEN_KEY);
 }
+
+/* ---------------- Local cache: instant boot ---------------- */
+// The last synced user + collection, so reopening the app renders immediately
+// even while the free-tier server is still waking up (30-60s cold start).
+const CACHE_USER = "kairos_user";
+const CACHE_DATA = "kairos_cache";
+function readCache(key) {
+  try {
+    return JSON.parse(localStorage.getItem(key));
+  } catch {
+    return null;
+  }
+}
+function writeCache(key, val) {
+  try {
+    localStorage.setItem(key, JSON.stringify(val));
+  } catch { /* storage full — cache is best-effort */ }
+}
 function authHeaders(extra = {}) {
   return authToken ? { ...extra, Authorization: `Bearer ${authToken}` } : extra;
 }
@@ -109,7 +127,12 @@ const api = {
   // --- auth ---
   async me() {
     const r = await fetch(apiUrl("/api/auth/me"), { headers: authHeaders() });
-    if (!r.ok) throw new Error("Not signed in");
+    if (!r.ok) {
+      // Callers must tell "signed out" (401) apart from "server unreachable".
+      const err = new Error("Not signed in");
+      err.status = r.status;
+      throw err;
+    }
     return r.json();
   },
   async login(username, password) {
@@ -1521,6 +1544,25 @@ function rerankByCard(products, parsed) {
 }
 
 /* ---------------- Recognition (shared by every capture) ---------------- */
+// Local OCR fallback is loaded only when first needed.
+let tesseractLoading = null;
+function ensureTesseract() {
+  if (window.Tesseract) return Promise.resolve();
+  if (!tesseractLoading) {
+    tesseractLoading = new Promise((resolve, reject) => {
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+      s.onload = resolve;
+      s.onerror = () => {
+        tesseractLoading = null;
+        reject(new Error("OCR script failed to load"));
+      };
+      document.head.appendChild(s);
+    });
+  }
+  return tesseractLoading;
+}
+
 // Identify one card image: server OCR/AI first, local Tesseract as fallback.
 // Returns { parsed, products, confidence, source, rateLimited }.
 async function scanImage(imageUrl) {
@@ -1550,8 +1592,10 @@ async function scanImage(imageUrl) {
     /* fall through to local OCR */
   }
 
-  // 2) Offline fallback: local Tesseract OCR.
+  // 2) Offline fallback: local Tesseract OCR (loaded on demand — it's a large
+  //    script that would otherwise slow every app start for a rare fallback).
   try {
+    await ensureTesseract();
     const prepped = await preprocess(imageUrl).catch(() => imageUrl);
     const { data } = await Tesseract.recognize(prepped, "eng");
     const parsed = parseOcr(data);
@@ -1928,14 +1972,31 @@ installBtn.addEventListener("click", async () => {
 /* ---------------- Auth flow ---------------- */
 let authMode = "login";
 
+function hideSplash() {
+  const s = $("#splash");
+  if (!s || s.classList.contains("gone")) return;
+  s.classList.add("gone");
+  setTimeout(() => s.remove(), 400);
+}
+function splashStatus(msg) {
+  const el = $("#splash-status");
+  if (el) el.textContent = msg;
+}
+
 function showAuth() {
+  hideSplash();
   $("#auth-screen").classList.remove("hidden");
   $("#app-root").classList.add("hidden");
   $("#auth-error").classList.add("hidden");
   $("#auth-password").value = "";
-  setTimeout(() => $("#auth-username").focus(), 60);
+  // Prefill the last username so returning users only type their password.
+  const last = localStorage.getItem("kairos_last_user");
+  const uEl = $("#auth-username");
+  if (last && !uEl.value) uEl.value = last;
+  setTimeout(() => (uEl.value ? $("#auth-password") : uEl).focus(), 60);
 }
 function hideAuth() {
+  hideSplash();
   $("#auth-screen").classList.add("hidden");
   $("#app-root").classList.remove("hidden");
 }
@@ -1962,6 +2023,7 @@ function applyUser(username) {
   $("#user-avatar").textContent = initial;
   $("#user-avatar-lg").textContent = initial;
   $("#user-dropdown-name").textContent = username;
+  writeCache(CACHE_USER, { username });
 }
 
 async function loadUserData() {
@@ -1969,9 +2031,11 @@ async function loadUserData() {
     const [inv, wish] = await Promise.all([api.getInventory(), api.getWishlist()]);
     state.inventory = inv.items || [];
     state.wishlist = wish.wishlist || [];
+    // Snapshot for instant rendering on the next app open.
+    writeCache(CACHE_DATA, { inventory: state.inventory, wishlist: state.wishlist });
   } catch {
-    state.inventory = [];
-    state.wishlist = [];
+    // Server unreachable (asleep/offline) — keep whatever is on screen
+    // (usually the cached snapshot) instead of blanking the collection.
   }
   renderCollection();
   renderWishlist();
@@ -1983,6 +2047,14 @@ document.addEventListener("click", (e) => {
   if (t) setAuthMode(t.dataset.auth);
 });
 
+// Show / hide password
+$("#pass-eye")?.addEventListener("click", () => {
+  const inp = $("#auth-password");
+  inp.type = inp.type === "password" ? "text" : "password";
+  $("#pass-eye").textContent = inp.type === "password" ? "👁" : "🙈";
+  inp.focus();
+});
+
 $("#auth-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const username = $("#auth-username").value.trim();
@@ -1991,18 +2063,29 @@ $("#auth-form").addEventListener("submit", async (e) => {
   const btn = $("#auth-submit");
   btn.disabled = true;
   btn.textContent = authMode === "login" ? "Logging in…" : "Creating…";
+  $("#auth-error").classList.add("hidden");
+  // The free-tier server sleeps when idle; the first request of the day hangs
+  // ~30s while it wakes. Explain that instead of looking frozen.
+  const wakeTimer = setTimeout(() => $("#auth-wake").classList.remove("hidden"), 2500);
   try {
     const d = authMode === "login"
       ? await api.login(username, password)
       : await api.register(username, password);
     setToken(d.token);
+    localStorage.setItem("kairos_last_user", d.username);
     applyUser(d.username);
     hideAuth();
     await loadUserData();
     toast(`Welcome${authMode === "register" ? "" : " back"}, ${d.username}!`);
   } catch (err) {
-    authError(err.message);
+    authError(
+      err instanceof TypeError
+        ? "Can't reach the server — check your connection and try again."
+        : err.message
+    );
   } finally {
+    clearTimeout(wakeTimer);
+    $("#auth-wake").classList.add("hidden");
     btn.disabled = false;
     btn.textContent = authMode === "login" ? "Log in" : "Create account";
   }
@@ -2017,6 +2100,8 @@ document.addEventListener("click", () => $("#user-dropdown")?.classList.add("hid
 $("#logout-btn").addEventListener("click", async () => {
   await api.logout();
   setToken(null);
+  localStorage.removeItem(CACHE_USER);
+  localStorage.removeItem(CACHE_DATA);
   state.inventory = [];
   state.wishlist = [];
   $("#user-dropdown").classList.add("hidden");
@@ -2024,18 +2109,75 @@ $("#logout-btn").addEventListener("click", async () => {
   showAuth();
 });
 
+/* ---------------- Boot ----------------
+ * Returning users see their collection INSTANTLY from the local snapshot;
+ * the session check + fresh data sync happen in the background. Only a real
+ * 401 (session revoked) sends them back to the login screen — a sleeping
+ * server never does. */
+async function syncInBackground(attempt = 0) {
+  try {
+    const me = await api.me();
+    applyUser(me.username);
+    await loadUserData();
+  } catch (e) {
+    if (e.status === 401) {
+      setToken(null);
+      localStorage.removeItem(CACHE_USER);
+      localStorage.removeItem(CACHE_DATA);
+      setAuthMode("login");
+      showAuth();
+      authError("Your session expired — please log in again.");
+      return;
+    }
+    // Unreachable (cold start / offline): retry quietly, keep the cached view.
+    if (attempt < 5) setTimeout(() => syncInBackground(attempt + 1), 8000 * (attempt + 1));
+    else toast("Offline — showing your last synced collection");
+  }
+}
+
 (async function init() {
+  const cachedUser = authToken ? readCache(CACHE_USER) : null;
+
+  // Fast path: token + snapshot → straight into the app, no network wait.
+  if (authToken && cachedUser?.username) {
+    applyUser(cachedUser.username);
+    const snap = readCache(CACHE_DATA);
+    if (snap) {
+      state.inventory = snap.inventory || [];
+      state.wishlist = snap.wishlist || [];
+      renderCollection();
+      renderWishlist();
+    }
+    hideAuth(); // shows the app, removes the splash
+    syncInBackground();
+    return;
+  }
+
+  // Token but no snapshot yet (first open on this device): verify online.
   if (authToken) {
+    const slow = setTimeout(
+      () => splashStatus("Waking the server — can take ~30 seconds…"),
+      2500
+    );
     try {
       const me = await api.me();
+      clearTimeout(slow);
       applyUser(me.username);
       hideAuth();
       await loadUserData();
       return;
-    } catch {
-      setToken(null);
+    } catch (e) {
+      clearTimeout(slow);
+      if (e.status === 401) setToken(null);
+      // Network failure with a token: keep the token (the session is probably
+      // fine) but we can't verify it — land on login with an explanation.
+      setAuthMode("login");
+      showAuth();
+      if (!e.status) authError("Couldn't reach the server — try again in a moment.");
+      return;
     }
   }
+
   setAuthMode("login");
   showAuth();
 })();
