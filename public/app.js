@@ -1037,10 +1037,10 @@ function analyzeFrame() {
   const v = cam.video;
   if (!v.videoWidth) return null;
   const g = guideRegion(v);
-  // Sample slightly beyond the guide so a card sitting a bit outside the
-  // lines still has its edges inside the sampled region.
-  const mx = g.w * 0.08;
-  const my = g.h * 0.08;
+  // Sample well beyond the guide so a card sitting outside the lines still
+  // has its edges inside the sampled region.
+  const mx = g.w * 0.12;
+  const my = g.h * 0.12;
   const sx = Math.max(0, g.x - mx);
   const sy = Math.max(0, g.y - my);
   const sw = Math.min(v.videoWidth - sx, g.w + 2 * mx);
@@ -1069,53 +1069,63 @@ function analyzeFrame() {
   const bx = Math.round(DET_W * 0.2); // side band widths
   const by = Math.round(DET_H * 0.2);
 
-  // A physical card edge is a STRAIGHT ISOLATED line: strong gradients at the
-  // same row (top/bottom) or column (left/right) across most of the band, with
-  // little else in that band. Two tests per side:
-  //   frac  – best 3-row/col window coverage (is there a long straight line?)
-  //   ratio – window hits vs ALL band hits (is the line isolated, or is the
-  //           whole band just busy texture — ceilings, blankets, wood grain?)
-  const rowHitsTop = new Float32Array(by);
-  const rowHitsBot = new Float32Array(by);
+  // Hit masks per border band: which pixels cross a strong perpendicular
+  // gradient. Bottom/right bands are stored with a LOCAL depth index counting
+  // inward from their side of the frame.
+  const topM = new Uint8Array(by * DET_W);
+  const botM = new Uint8Array(by * DET_W);
   for (let x = 1; x < DET_W - 1; x++) {
     for (let y = 1; y < by; y++) {
-      if (Math.abs(gray[(y + 1) * DET_W + x] - gray[(y - 1) * DET_W + x]) > T) rowHitsTop[y]++;
+      if (Math.abs(gray[(y + 1) * DET_W + x] - gray[(y - 1) * DET_W + x]) > T) topM[y * DET_W + x] = 1;
       const yy = DET_H - 1 - y;
-      if (Math.abs(gray[(yy + 1) * DET_W + x] - gray[(yy - 1) * DET_W + x]) > T) rowHitsBot[y]++;
+      if (Math.abs(gray[(yy + 1) * DET_W + x] - gray[(yy - 1) * DET_W + x]) > T) botM[y * DET_W + x] = 1;
     }
   }
-  const colHitsL = new Float32Array(bx);
-  const colHitsR = new Float32Array(bx);
+  const leftM = new Uint8Array(bx * DET_H);
+  const rightM = new Uint8Array(bx * DET_H);
   for (let y = 1; y < DET_H - 1; y++) {
     for (let x = 1; x < bx; x++) {
-      if (Math.abs(gray[y * DET_W + x + 1] - gray[y * DET_W + x - 1]) > T) colHitsL[x]++;
+      if (Math.abs(gray[y * DET_W + x + 1] - gray[y * DET_W + x - 1]) > T) leftM[x * DET_H + y] = 1;
       const xx = DET_W - 1 - x;
-      if (Math.abs(gray[y * DET_W + xx + 1] - gray[y * DET_W + xx - 1]) > T) colHitsR[x]++;
+      if (Math.abs(gray[y * DET_W + xx + 1] - gray[y * DET_W + xx - 1]) > T) rightM[x * DET_H + y] = 1;
     }
   }
-  const lineScore = (hits, len) => {
+
+  // A card edge is a STRAIGHT ISOLATED line — but hands aren't tripods, so the
+  // line may be TILTED. Fit lines across a range of slopes (±~5°) and keep the
+  // best. Two tests per side:
+  //   frac  – how much of the band the fitted line covers (long line?)
+  //   ratio – line hits vs ALL band hits (isolated line, or busy texture like
+  //           ceilings / blankets / wood grain filling the whole band?)
+  const SLOPES = [-9, -6, -3, 0, 3, 6, 9];
+  const lineFit = (mask, depth, len) => {
+    let total = 0;
+    for (let i = 0; i < mask.length; i++) total += mask[i];
     let best = 0;
-    let bestIdx = -1;
-    let totalHits = 0;
-    for (let i = 0; i < hits.length; i++) totalHits += hits[i];
-    for (let i = 1; i < hits.length; i++) {
-      const w = hits[i] + (hits[i - 1] || 0) + (i + 1 < hits.length ? hits[i + 1] : 0);
-      if (w > best) {
-        best = w;
-        bestIdx = i;
+    let bestAt = -1;
+    for (const sl of SLOPES) {
+      for (let base = 1; base < depth; base++) {
+        let cnt = 0;
+        for (let t = 0; t < len; t++) {
+          const d = base + Math.round((sl * t) / len);
+          if (d >= 1 && d < depth) {
+            const at = d * len + t;
+            if (mask[at] || (d > 1 && mask[at - len]) || (d < depth - 1 && mask[at + len])) cnt++;
+          }
+        }
+        if (cnt > best) {
+          best = cnt;
+          bestAt = base + sl / 2; // midline of the tilted edge
+        }
       }
     }
-    return {
-      frac: best / len,
-      ratio: best / Math.max(1, totalHits),
-      idx: bestIdx,
-    };
+    return { frac: best / len, ratio: best / Math.max(1, total), idx: bestAt };
   };
-  const top = lineScore(rowHitsTop, DET_W - 2);
-  const bot = lineScore(rowHitsBot, DET_W - 2);
-  const left = lineScore(colHitsL, DET_H - 2);
-  const right = lineScore(colHitsR, DET_H - 2);
-  const isEdge = (s) => s.frac > 0.55 && s.ratio > 0.42;
+  const top = lineFit(topM, by, DET_W);
+  const bot = lineFit(botM, by, DET_W);
+  const left = lineFit(leftM, bx, DET_H);
+  const right = lineFit(rightM, bx, DET_H);
+  const isEdge = (s) => s.frac > 0.5 && s.ratio > 0.3;
   const ok = [isEdge(top), isEdge(bot), isEdge(left), isEdge(right)];
   const sides = ok.filter(Boolean).length;
   // A card has PARALLEL edge pairs. Wall corners, ceiling lines and door frames
@@ -1158,18 +1168,37 @@ function analyzeFrame() {
 
 // Latest good card-edge fix, used to crop captures tightly around the card.
 let lastCardBox = null;
+const CARD_WH = 63 / 88; // physical Pokémon card aspect (63mm x 88mm)
 
-// Convert detected edge positions to a crop box in video pixels, filling any
-// missing side with the guide's own edge. A small margin keeps the card's
-// border visible (OCR wants the full card, including the collector number).
+// Convert detected edge positions to a crop box in video pixels. Detection
+// needs only 3 edges — the missing one is INFERRED from the card's physical
+// shape, so a card hanging out of the guide still gets a full-card crop
+// (before, the crop stopped at the guide and cut the card off — that's why
+// shots had to be aimed "a bit up" to read). A small margin keeps the whole
+// border, incl. the collector number, in frame.
 function cardBoxFromAnalysis(a) {
   const s = a.sample;
   const px = (x) => s.sx + (x / DET_W) * s.sw;
   const py = (y) => s.sy + (y / DET_H) * s.sh;
-  const x0 = a.edgesAt.left != null ? px(a.edgesAt.left) : s.sx;
-  const x1 = a.edgesAt.right != null ? px(a.edgesAt.right) : s.sx + s.sw;
-  const y0 = a.edgesAt.top != null ? py(a.edgesAt.top) : s.sy;
-  const y1 = a.edgesAt.bot != null ? py(a.edgesAt.bot) : s.sy + s.sh;
+  let x0 = a.edgesAt.left != null ? px(a.edgesAt.left) : null;
+  let x1 = a.edgesAt.right != null ? px(a.edgesAt.right) : null;
+  let y0 = a.edgesAt.top != null ? py(a.edgesAt.top) : null;
+  let y1 = a.edgesAt.bot != null ? py(a.edgesAt.bot) : null;
+  if (x0 != null && x1 != null) {
+    const h = (x1 - x0) / CARD_WH;
+    if (y0 == null && y1 != null) y0 = y1 - h;
+    else if (y1 == null && y0 != null) y1 = y0 + h;
+  }
+  if (y0 != null && y1 != null) {
+    const w = (y1 - y0) * CARD_WH;
+    if (x0 == null && x1 != null) x0 = x1 - w;
+    else if (x1 == null && x0 != null) x1 = x0 + w;
+  }
+  // Anything still unknown falls back to the sampled window's edge.
+  if (x0 == null) x0 = s.sx;
+  if (x1 == null) x1 = s.sx + s.sw;
+  if (y0 == null) y0 = s.sy;
+  if (y1 == null) y1 = s.sy + s.sh;
   const mw = (x1 - x0) * 0.045;
   const mh = (y1 - y0) * 0.045;
   return {
@@ -1179,6 +1208,24 @@ function cardBoxFromAnalysis(a) {
     h: y1 - y0 + 2 * mh,
     time: Date.now(),
   };
+}
+
+// Live outline showing exactly what the next capture will contain.
+function showCardBox(box) {
+  const el = document.getElementById("scan-cardbox");
+  const stage = document.querySelector(".scan-stage");
+  const v = cam.video;
+  if (!el || !stage || !v.videoWidth) return;
+  const vis = visibleRegion(v);
+  const kx = stage.clientWidth / vis.w;
+  const ky = stage.clientHeight / vis.h;
+  el.style.transform = `translate(${(box.x - vis.x) * kx}px, ${(box.y - vis.y) * ky}px)`;
+  el.style.width = `${box.w * kx}px`;
+  el.style.height = `${box.h * ky}px`;
+  el.classList.remove("hidden");
+}
+function hideCardBox() {
+  document.getElementById("scan-cardbox")?.classList.add("hidden");
 }
 
 function setHint(text, good) {
@@ -1203,10 +1250,16 @@ function detLoop() {
   // A real card shows at least 3 of its 4 physical edges as straight isolated
   // lines — including one PARALLEL pair — plus a busy interior (artwork/text).
   // Ceilings, walls, floors and bedding don't produce that structure.
-  const cardDetected = a.sides >= 3 && a.hasPair && a.density > 0.04;
-  const partiallyIn = a.sides >= 1 && a.density > 0.03;
+  // (density floor is low: pale watercolor-style cards have soft interiors)
+  const cardDetected = a.sides >= 3 && a.hasPair && a.density > 0.028;
+  const partiallyIn = a.sides >= 1 && a.density > 0.025;
   const steady = a.motion < 8;
-  if (cardDetected) lastCardBox = cardBoxFromAnalysis(a);
+  if (cardDetected) {
+    lastCardBox = cardBoxFromAnalysis(a);
+    showCardBox(lastCardBox);
+  } else {
+    hideCardBox();
+  }
 
   const guide = $("#scan-guide");
   const ring = $("#scan-ring");
@@ -1264,6 +1317,7 @@ function startDetect() {
 function stopDetect() {
   clearTimeout(detTimer);
   detTimer = null;
+  hideCardBox();
 }
 
 // Capture the current frame into the batch tray. Used by both auto capture
@@ -1319,7 +1373,8 @@ async function openCamera() {
 
   try {
     cam.stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: "environment", width: { ideal: 1280 } },
+      // 1080p+ makes the tight card crops noticeably sharper for OCR.
+      video: { facingMode: "environment", width: { ideal: 1920 } },
       audio: false,
     });
     cam.video.srcObject = cam.stream;

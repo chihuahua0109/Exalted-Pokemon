@@ -619,13 +619,22 @@ function nameSim(a, b) {
   return inter / Math.max(ta.size, tb.size);
 }
 
+// "011/086", "11/86" and "11 / 86" are the same collector number.
+function normCollector(n) {
+  return String(n)
+    .replace(/\s+/g, "")
+    .split("/")
+    .map((part) => part.replace(/^0+(?=.)/, ""))
+    .join("/");
+}
+
 function scoreProduct(p, parsed) {
   let s = 0;
   const num = parsed.number;
   if (num && p.number) {
     const pn = p.number.replace(/\s+/g, "");
-    if (pn === num) s += 120;
-    else if (pn.split("/")[0].replace(/^0+/, "") === num.split("/")[0].replace(/^0+/, "")) s += 40;
+    if (pn === num || normCollector(pn) === normCollector(num)) s += 120;
+    else if (normCollector(pn).split("/")[0] === normCollector(num).split("/")[0]) s += 40;
   }
   // Species is decisive: a product for a different Pokémon is simply wrong,
   // no matter how well the number or HP happen to line up.
