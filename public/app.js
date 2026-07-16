@@ -28,6 +28,7 @@ const state = {
   scanMatches: [],
   scanBatch: [], // cards captured in the current scan session
   collapsedGroups: new Set(),
+  history: [], // daily collection-value snapshots for the market chart
 };
 
 /* ---------------- Auth token ---------------- */
@@ -553,12 +554,139 @@ function marketBarsHTML(buckets) {
     .join("");
 }
 
+/* Collection value line chart (canvas, no libraries). One point per day from
+ * the server's history, with today's live value as the final point. */
+function renderValueChart() {
+  const cv = $("#value-chart");
+  if (!cv || !cv.offsetParent) return; // market view not visible
+  const liveValue = state.inventory.reduce(
+    (s, i) => s + (i.marketPrice || 0) * i.quantity,
+    0
+  );
+  const today = new Date().toISOString().slice(0, 10);
+  const series = (state.history || []).slice();
+  const last = series[series.length - 1];
+  if (!last || last.d !== today) series.push({ d: today, v: liveValue });
+  else last.v = liveValue;
+
+  const sub = $("#market-chart-sub");
+  if (sub) {
+    const first = series[0];
+    const delta = series[series.length - 1].v - first.v;
+    const pct = first.v > 0 ? ((delta / first.v) * 100).toFixed(1) : null;
+    sub.textContent =
+      series.length < 2
+        ? "Tracking starts today — check back tomorrow"
+        : `${fmtDay(first.d)} → today · ${delta >= 0 ? "+" : "−"}${money(Math.abs(delta))}${pct != null ? ` (${delta >= 0 ? "+" : ""}${pct}%)` : ""}`;
+  }
+
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const cssW = cv.parentElement.clientWidth - 2;
+  const cssH = 190;
+  cv.style.width = cssW + "px";
+  cv.style.height = cssH + "px";
+  cv.width = Math.round(cssW * dpr);
+  cv.height = Math.round(cssH * dpr);
+  const ctx = cv.getContext("2d");
+  ctx.scale(dpr, dpr);
+
+  const padL = 46;
+  const padR = 12;
+  const padT = 14;
+  const padB = 24;
+  const plotW = cssW - padL - padR;
+  const plotH = cssH - padT - padB;
+
+  const vals = series.map((p) => p.v);
+  let vMin = Math.min(...vals);
+  let vMax = Math.max(...vals);
+  if (vMax - vMin < 1) {
+    // flat line — give it headroom so it doesn't hug the frame
+    vMax += Math.max(1, vMax * 0.1);
+    vMin = Math.max(0, vMin - Math.max(1, vMin * 0.1));
+  } else {
+    const head = (vMax - vMin) * 0.12;
+    vMax += head;
+    vMin = Math.max(0, vMin - head);
+  }
+
+  const X = (i) =>
+    padL + (series.length === 1 ? plotW / 2 : (i / (series.length - 1)) * plotW);
+  const Y = (v) => padT + (1 - (v - vMin) / (vMax - vMin)) * plotH;
+
+  // Grid + axis labels
+  ctx.font = "10.5px system-ui, sans-serif";
+  ctx.textBaseline = "middle";
+  for (let g = 0; g <= 2; g++) {
+    const v = vMin + ((vMax - vMin) * g) / 2;
+    const y = Y(v);
+    ctx.strokeStyle = "rgba(43, 53, 80, 0.6)";
+    ctx.setLineDash([4, 5]);
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(cssW - padR, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#9aa6c4";
+    ctx.textAlign = "right";
+    ctx.fillText(compactMoney(v), padL - 7, y);
+  }
+  // Date labels: first and last
+  ctx.textAlign = "left";
+  ctx.fillText(fmtDay(series[0].d), padL, cssH - 9);
+  ctx.textAlign = "right";
+  ctx.fillText("Today", cssW - padR, cssH - 9);
+
+  // Area fill under the line
+  const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+  grad.addColorStop(0, "rgba(54, 211, 153, 0.28)");
+  grad.addColorStop(1, "rgba(54, 211, 153, 0)");
+  ctx.beginPath();
+  series.forEach((p, i) => (i ? ctx.lineTo(X(i), Y(p.v)) : ctx.moveTo(X(i), Y(p.v))));
+  ctx.lineTo(X(series.length - 1), padT + plotH);
+  ctx.lineTo(X(0), padT + plotH);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // The line itself
+  ctx.beginPath();
+  series.forEach((p, i) => (i ? ctx.lineTo(X(i), Y(p.v)) : ctx.moveTo(X(i), Y(p.v))));
+  ctx.strokeStyle = "#36d399";
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.stroke();
+
+  // Point markers (only when sparse enough to read)
+  if (series.length <= 30) {
+    series.forEach((p, i) => {
+      ctx.beginPath();
+      ctx.arc(X(i), Y(p.v), i === series.length - 1 ? 4 : 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = i === series.length - 1 ? "#eef2ff" : "#36d399";
+      ctx.fill();
+      if (i === series.length - 1) {
+        ctx.strokeStyle = "#36d399";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    });
+  }
+}
+const fmtDay = (d) => {
+  const dt = new Date(d + "T12:00:00");
+  return dt.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+};
+const compactMoney = (v) =>
+  v >= 1000 ? `$${(v / 1000).toFixed(1)}k` : `$${v.toFixed(v < 10 ? 2 : 0)}`;
+
 function renderMarket() {
   const items = state.inventory;
   const empty = $("#market-empty");
   const body = $("#market-body");
   empty.classList.toggle("hidden", items.length > 0);
   body.classList.toggle("hidden", items.length === 0);
+  requestAnimationFrame(renderValueChart);
 
   const totalValue = items.reduce((s, i) => s + (i.marketPrice || 0) * i.quantity, 0);
   const totalSpent = items.reduce(
@@ -1199,8 +1327,10 @@ function cardBoxFromAnalysis(a) {
   if (x1 == null) x1 = s.sx + s.sw;
   if (y0 == null) y0 = s.sy;
   if (y1 == null) y1 = s.sy + s.sh;
-  const mw = (x1 - x0) * 0.045;
-  const mh = (y1 - y0) * 0.045;
+  // Generous margin — the recenter pass on the captured still trims it back
+  // to an even border, so err on including too much rather than cutting off.
+  const mw = (x1 - x0) * 0.07;
+  const mh = (y1 - y0) * 0.07;
   return {
     x: Math.max(0, x0 - mw),
     y: Math.max(0, y0 - mh),
@@ -1320,6 +1450,70 @@ function stopDetect() {
   hideCardBox();
 }
 
+/* Second-pass framing: find the card's outline in the CAPTURED still and
+ * re-crop so the card sits centered with even margins. Fixes the systematic
+ * "card sits high in the shot" offset — whatever the live detector missed,
+ * this pass corrects using the actual captured pixels. */
+async function recenterCapture(url) {
+  try {
+    const img = await loadImage(url);
+    const W = 120;
+    const H = Math.max(40, Math.round((W * img.naturalHeight) / img.naturalWidth));
+    const c = document.createElement("canvas");
+    c.width = W;
+    c.height = H;
+    const cx = c.getContext("2d", { willReadFrequently: true });
+    cx.drawImage(img, 0, 0, W, H);
+    const { data } = cx.getImageData(0, 0, W, H);
+    const gray = new Float32Array(W * H);
+    for (let i = 0, p = 0; i < gray.length; i++, p += 4) {
+      gray[i] = 0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2];
+    }
+    const T = 24;
+    // Long-contrast-line score for every row and column.
+    const rowScore = new Float32Array(H);
+    const colScore = new Float32Array(W);
+    for (let y = 1; y < H - 1; y++) {
+      for (let x = 1; x < W - 1; x++) {
+        if (Math.abs(gray[(y + 1) * W + x] - gray[(y - 1) * W + x]) > T) rowScore[y]++;
+        if (Math.abs(gray[y * W + x + 1] - gray[y * W + x - 1]) > T) colScore[x]++;
+      }
+    }
+    // Outermost long lines, searched only near each border (30% bands) so
+    // interior card artwork lines can't masquerade as edges.
+    const find = (score, len, from, to, step, need) => {
+      for (let i = from; step > 0 ? i < to : i > to; i += step) {
+        if (score[i] > need) return i;
+      }
+      return -1;
+    };
+    const top = find(rowScore, H, 1, Math.round(H * 0.3), 1, W * 0.5);
+    const bot = find(rowScore, H, H - 2, Math.round(H * 0.7), -1, W * 0.5);
+    const left = find(colScore, W, 1, Math.round(W * 0.3), 1, H * 0.5);
+    const right = find(colScore, W, W - 2, Math.round(W * 0.7), -1, H * 0.5);
+    if (top < 0 || bot < 0 || left < 0 || right < 0) return url;
+    const bw = right - left;
+    const bh = bot - top;
+    if (bw < W * 0.45 || bh < H * 0.45) return url;
+
+    // Map back to the full-res image and crop with an even margin all around.
+    const kx = img.naturalWidth / W;
+    const ky = img.naturalHeight / H;
+    const m = 0.05;
+    const x0 = Math.max(0, (left - bw * m) * kx);
+    const y0 = Math.max(0, (top - bh * m) * ky);
+    const x1 = Math.min(img.naturalWidth, (right + bw * m) * kx);
+    const y1 = Math.min(img.naturalHeight, (bot + bh * m) * ky);
+    const out = document.createElement("canvas");
+    out.width = Math.round(x1 - x0);
+    out.height = Math.round(y1 - y0);
+    out.getContext("2d").drawImage(img, x0, y0, x1 - x0, y1 - y0, 0, 0, out.width, out.height);
+    return out.toDataURL("image/jpeg", 0.95);
+  } catch {
+    return url;
+  }
+}
+
 // Capture the current frame into the batch tray. Used by both auto capture
 // and the shutter button. The camera keeps running.
 function captureToBatch() {
@@ -1329,7 +1523,7 @@ function captureToBatch() {
   autoArmed = false; // wait for the card to leave the frame before re-firing
   flashStage();
   navigator.vibrate?.(35);
-  addCapture(url);
+  recenterCapture(url).then(addCapture);
 }
 
 // Brief white flash so the user knows a shot was taken.
@@ -1420,7 +1614,7 @@ $("#scan-file").addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = () => addCapture(reader.result);
+  reader.onload = () => recenterCapture(reader.result).then(addCapture);
   reader.readAsDataURL(file);
   e.target.value = ""; // allow re-selecting the same file
 });
@@ -2091,8 +2285,13 @@ async function loadUserData() {
     const [inv, wish] = await Promise.all([api.getInventory(), api.getWishlist()]);
     state.inventory = inv.items || [];
     state.wishlist = wish.wishlist || [];
+    state.history = inv.history || [];
     // Snapshot for instant rendering on the next app open.
-    writeCache(CACHE_DATA, { inventory: state.inventory, wishlist: state.wishlist });
+    writeCache(CACHE_DATA, {
+      inventory: state.inventory,
+      wishlist: state.wishlist,
+      history: state.history,
+    });
   } catch {
     // Server unreachable (asleep/offline) — keep whatever is on screen
     // (usually the cached snapshot) instead of blanking the collection.
@@ -2205,6 +2404,7 @@ async function syncInBackground(attempt = 0) {
     if (snap) {
       state.inventory = snap.inventory || [];
       state.wishlist = snap.wishlist || [];
+      state.history = snap.history || [];
       renderCollection();
       renderWishlist();
     }

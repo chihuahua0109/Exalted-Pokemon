@@ -949,13 +949,31 @@ async function loadDb(userId) {
   }
   if (!Array.isArray(db.items)) db.items = [];
   if (!Array.isArray(db.wishlist)) db.wishlist = [];
+  if (!Array.isArray(db.history)) db.history = [];
   return db;
 }
+
+// Record today's total collection value into db.history (one point per day).
+// Powers the "value over time" chart on the Market screen.
+function recordHistory(db) {
+  const value =
+    Math.round(
+      db.items.reduce((s, i) => s + (i.marketPrice || 0) * (i.quantity || 1), 0) * 100
+    ) / 100;
+  const today = new Date().toISOString().slice(0, 10);
+  if (!Array.isArray(db.history)) db.history = [];
+  const last = db.history[db.history.length - 1];
+  if (last && last.d === today) last.v = value;
+  else db.history.push({ d: today, v: value });
+  if (db.history.length > 730) db.history = db.history.slice(-730); // ~2 years
+}
+
 async function saveDb(userId, db) {
+  recordHistory(db);
   if (mongo) {
     await mongo.userdata.updateOne(
       { userId },
-      { $set: { userId, items: db.items, wishlist: db.wishlist } },
+      { $set: { userId, items: db.items, wishlist: db.wishlist, history: db.history } },
       { upsert: true }
     );
     return;
@@ -1042,7 +1060,14 @@ app.get("/api/auth/me", async (req, res) => {
 });
 
 app.get("/api/inventory", requireAuth, async (req, res) => {
-  res.json(await loadDb(req.userId));
+  const db = await loadDb(req.userId);
+  // Passive daily snapshot: opening the app is enough to extend the chart.
+  const today = new Date().toISOString().slice(0, 10);
+  const last = db.history[db.history.length - 1];
+  if (db.items.length && (!last || last.d !== today)) {
+    saveDb(req.userId, db).catch(() => {});
+  }
+  res.json(db);
 });
 
 app.post("/api/inventory", requireAuth, async (req, res) => {
