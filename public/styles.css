@@ -359,12 +359,115 @@ body {
   display: flex; align-items: center; justify-content: space-between; gap: 6px;
   padding: 8px 10px; border-top: 1px solid var(--line);
 }
-.qty-btn { width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); cursor: pointer; font-size: 16px; font-weight: 700; }
+.qty-btn { width: 32px; height: 32px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); cursor: pointer; font-size: 16px; font-weight: 700; }
 .qty-btn:hover { border-color: var(--accent); }
+.qty-btn:active { transform: scale(0.92); }
 .qty-num { font-weight: 700; min-width: 22px; text-align: center; }
 .cond-tag { font-size: 10px; color: var(--muted); }
-.trash { background: transparent; border: none; color: var(--muted); cursor: pointer; font-size: 15px; }
-.trash:hover { color: var(--red); }
+.trash {
+  background: transparent; border: 1px solid transparent; color: var(--muted);
+  cursor: pointer; font-size: 15px; width: 32px; height: 32px; border-radius: 9px;
+  display: grid; place-items: center; transition: 0.15s;
+}
+.trash:hover { color: var(--red); border-color: rgba(255, 92, 92, 0.45); background: rgba(255, 92, 92, 0.08); }
+.trash:active { transform: scale(0.92); }
+
+/* ----- Multi-select mode ----- */
+#select-toggle.active { border-color: var(--accent); color: var(--accent); }
+.sel-check {
+  position: absolute; top: 8px; left: 8px; z-index: 3;
+  width: 26px; height: 26px; border-radius: 50%;
+  border: 2px solid rgba(238, 242, 255, 0.75); background: rgba(12, 15, 26, 0.72);
+  color: transparent; font-size: 14px; font-weight: 900; line-height: 22px; text-align: center;
+  opacity: 0; transform: scale(0.6); transition: 0.16s; pointer-events: none;
+}
+.grid.selecting .sel-check { opacity: 1; transform: scale(1); }
+.grid.selecting .card { cursor: pointer; }
+.grid.selecting .mini-controls { opacity: 0.35; pointer-events: none; }
+.card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), var(--shadow); }
+.card.selected .sel-check { background: var(--accent); border-color: var(--accent); color: #1a1500; }
+.card.selected .card-img-wrap::after {
+  content: ""; position: absolute; inset: 0; background: rgba(255, 178, 32, 0.12);
+}
+
+.select-bar {
+  position: fixed; left: 50%; transform: translateX(-50%);
+  bottom: calc(18px + env(safe-area-inset-bottom));
+  z-index: 55; display: flex; align-items: center; gap: 10px;
+  width: min(560px, calc(100vw - 24px));
+  background: rgba(18, 22, 38, 0.96); backdrop-filter: blur(14px);
+  border: 1px solid var(--line); border-radius: 16px;
+  padding: 10px 12px; box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
+  animation: tray-in 0.22s ease;
+}
+.select-bar.hidden { display: none; }
+.sel-count { font-weight: 800; font-size: 14px; white-space: nowrap; }
+.sel-link {
+  background: none; border: none; color: var(--accent); font-size: 13px;
+  font-weight: 700; cursor: pointer; padding: 4px 2px; white-space: nowrap;
+}
+.sel-spacer { flex: 1; }
+.select-bar .btn { padding: 9px 12px; font-size: 13px; }
+.select-bar .btn:disabled { opacity: 0.45; cursor: default; }
+.sel-x {
+  background: none; border: none; color: var(--muted); font-size: 22px;
+  cursor: pointer; line-height: 1; padding: 2px 4px;
+}
+.sel-x:hover { color: var(--text); }
+.btn.danger-solid {
+  background: var(--red); border-color: var(--red); color: #fff;
+  box-shadow: 0 4px 14px rgba(255, 92, 92, 0.3);
+}
+.btn.danger-solid:hover { filter: brightness(1.08); }
+.btn.danger-solid:disabled:hover { filter: none; transform: none; }
+
+/* ----- Group badge on cards ----- */
+.group-badge {
+  position: absolute; left: 8px; bottom: 8px; max-width: calc(100% - 16px);
+  background: rgba(12, 15, 26, 0.88); border: 1px solid var(--line);
+  color: var(--text); font-size: 11px; font-weight: 700;
+  padding: 3px 8px; border-radius: 20px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.group-empty {
+  grid-column: 1 / -1; color: var(--muted); font-size: 13px;
+  border: 1px dashed var(--line); border-radius: 12px;
+  padding: 14px 16px; margin: 2px 0 8px;
+}
+
+/* ----- Groups sheet ----- */
+.group-sheet-title { margin: 2px 2px 12px; font-size: 17px; }
+.group-row {
+  display: flex; align-items: center; gap: 11px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 13px; margin-bottom: 8px; cursor: pointer; transition: 0.14s;
+}
+.group-row:hover { border-color: var(--accent); }
+.group-row-icon { font-size: 16px; }
+.group-row-name { font-weight: 700; font-size: 14.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-row-count { color: var(--muted); font-size: 12.5px; font-weight: 700; }
+.group-row-del {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 14px; padding: 4px 6px; border-radius: 8px;
+}
+.group-row-del:hover { color: var(--red); background: rgba(255, 92, 92, 0.1); }
+.group-row.ungroup { border-style: dashed; color: var(--muted); }
+.group-row.ungroup .group-row-name { color: var(--muted); }
+.group-new { display: flex; gap: 8px; margin-top: 12px; }
+.group-new .filter-input { flex: 1; min-width: 0; }
+
+/* ----- Confirm dialog ----- */
+.confirm-modal { z-index: 85; }
+.confirm-card {
+  position: relative; width: min(380px, calc(100vw - 40px));
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 18px;
+  padding: 22px 20px 18px; box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+  animation: confirm-pop 0.18s cubic-bezier(0.2, 0.9, 0.3, 1.4);
+}
+@keyframes confirm-pop { from { transform: scale(0.92); opacity: 0; } }
+.confirm-card p { margin: 0 0 18px; font-size: 15px; line-height: 1.5; font-weight: 600; }
+.confirm-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.confirm-actions .btn { min-width: 96px; justify-content: center; }
 
 /* Scan */
 .scan-sub { color: var(--muted); font-size: 13px; margin-top: 4px; }
@@ -594,11 +697,6 @@ body {
 .wish-controls { display: flex; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); }
 .wish-controls .btn { flex: 1; justify-content: center; padding: 8px; font-size: 12.5px; }
 
-.install-btn { padding: 8px 14px; font-size: 13px; }
-@media (max-width: 760px) {
-  .install-btn { position: fixed; right: 14px; bottom: calc(86px + env(safe-area-inset-bottom)); z-index: 45; box-shadow: var(--shadow); }
-}
-
 /* Bottom navigation (mobile app feel) */
 .bottom-nav {
   display: none;
@@ -771,6 +869,15 @@ body {
   }
   .scan-sub { font-size: 12px; }
   .tray-chip { max-width: 170px; }
+  /* Selection bar floats above the bottom nav */
+  .select-bar { bottom: calc(78px + env(safe-area-inset-bottom)); padding: 9px 10px; gap: 8px; }
+  .select-bar .btn { padding: 9px 10px; font-size: 12.5px; }
+  /* Keep all four toolbar controls comfortable on small screens */
+  #select-toggle { flex: 1; justify-content: center; }
+  .group-new .filter-input { font-size: 16px; }
+  /* Confirm dialog centers even though other modals bottom-sheet on mobile */
+  .modal.confirm-modal { align-items: center; padding: 20px; }
+  .confirm-card { border-radius: 18px; }
 }
 
 @media (display-mode: standalone) {
@@ -859,6 +966,21 @@ body {
 /* Detail price chips: hairline accent on top */
 .price-chip { border-top: 2px solid var(--line); }
 .price-chip.market { border-top-color: rgba(54, 211, 153, 0.6); }
+
+/* Breathing room between collection groups */
+.group-header { margin-top: 16px; }
+.group-header:first-child { margin-top: 2px; }
+
+/* Toolbar selects: consistent dark chrome across platforms */
+.select {
+  appearance: none; -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 18px) 50%, calc(100% - 13px) 50%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 32px;
+}
 
 /* User pill: soft glow on hover */
 .user-pill:hover { box-shadow: 0 4px 14px rgba(255, 210, 63, 0.15); }

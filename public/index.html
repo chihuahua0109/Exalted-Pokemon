@@ -77,7 +77,6 @@
         <button class="tab" data-view="wishlist">Wishlist</button>
       </nav>
       <div class="topbar-actions">
-        <button class="btn primary install-btn hidden" id="install-btn">⬇ Install app</button>
         <div class="user-menu">
           <button class="user-pill" id="user-pill" type="button">
             <span class="user-avatar" id="user-avatar">?</span>
@@ -124,6 +123,7 @@
         <input id="collection-filter" class="filter-input" placeholder="Filter your collection…" />
         <select id="collection-group" class="select">
           <option value="none">Group: None</option>
+          <option value="custom">Group: My groups</option>
           <option value="set">Group: Set</option>
           <option value="rarity">Group: Rarity</option>
         </select>
@@ -133,9 +133,20 @@
           <option value="recent">Sort: Recently added</option>
           <option value="qty">Sort: Quantity</option>
         </select>
+        <button class="btn ghost" id="select-toggle" title="Select multiple cards">☑ Select</button>
       </div>
 
       <div id="collection-grid" class="grid"></div>
+
+      <!-- Multi-select action bar (appears in select mode) -->
+      <div id="select-bar" class="select-bar hidden">
+        <span class="sel-count" id="sel-count">0 selected</span>
+        <button class="sel-link" id="sel-all">Select all</button>
+        <span class="sel-spacer"></span>
+        <button class="btn ghost" id="sel-group">🗂 Group</button>
+        <button class="btn danger-solid" id="sel-delete">🗑 Delete</button>
+        <button class="sel-x" id="sel-cancel" title="Exit selection">×</button>
+      </div>
       <div id="collection-empty" class="empty hidden">
         <div class="empty-art">📦</div>
         <h2>Your collection is empty</h2>
@@ -313,6 +324,24 @@
     <div id="chip-sheet" class="chip-sheet hidden">
       <div class="chip-sheet-backdrop" data-sheetclose></div>
       <div class="chip-sheet-card" id="chip-sheet-body"></div>
+    </div>
+
+    <!-- GROUPS SHEET (assign selected cards / manage groups) -->
+    <div id="group-sheet" class="chip-sheet hidden">
+      <div class="chip-sheet-backdrop" data-gclose></div>
+      <div class="chip-sheet-card" id="group-sheet-body"></div>
+    </div>
+
+    <!-- CONFIRM DIALOG (replaces window.confirm — unreliable in installed PWAs) -->
+    <div id="confirm-modal" class="modal confirm-modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="confirm-card">
+        <p id="confirm-msg"></p>
+        <div class="confirm-actions">
+          <button class="btn ghost" id="confirm-no">Cancel</button>
+          <button class="btn danger-solid" id="confirm-yes">Delete</button>
+        </div>
+      </div>
     </div>
 
     <div id="toast" class="toast hidden"></div>

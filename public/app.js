@@ -29,6 +29,9 @@ const state = {
   scanBatch: [], // cards captured in the current scan session
   collapsedGroups: new Set(),
   history: [], // daily collection-value snapshots for the market chart
+  groups: [], // user-defined group names
+  selectMode: false,
+  selected: new Set(), // inventory item ids picked in select mode
 };
 
 /* ---------------- Auth token ---------------- */
@@ -105,7 +108,32 @@ const api = {
     return r.json();
   },
   async deleteItem(id) {
-    return authFetch(`/api/inventory/${id}`, { method: "DELETE" });
+    const r = await authFetch(`/api/inventory/${id}`, { method: "DELETE" });
+    if (!r.ok) throw new Error("Delete failed");
+    return r.json();
+  },
+  async bulk(ids, action, group) {
+    const r = await authFetch("/api/inventory/bulk", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ids, action, group }),
+    });
+    if (!r.ok) throw new Error("Bulk action failed");
+    return r.json();
+  },
+  async createGroup(name) {
+    const r = await authFetch("/api/groups", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "Couldn't create group");
+    return r.json();
+  },
+  async deleteGroup(name) {
+    const r = await authFetch(`/api/groups/${encodeURIComponent(name)}`, { method: "DELETE" });
+    if (!r.ok) throw new Error("Couldn't delete group");
+    return r.json();
   },
   async refresh() {
     return (await authFetch("/api/inventory/refresh", { method: "POST" })).json();
@@ -175,6 +203,27 @@ function toast(msg) {
   toastTimer = setTimeout(() => t.classList.add("hidden"), 2600);
 }
 
+/* ---------------- Confirm dialog ----------------
+ * window.confirm() silently returns false inside installed iOS web apps,
+ * which made the delete buttons look dead. This in-app dialog works everywhere. */
+let confirmResolve = null;
+function appConfirm(msg, yesLabel = "Delete") {
+  return new Promise((resolve) => {
+    confirmResolve = resolve;
+    $("#confirm-msg").textContent = msg;
+    $("#confirm-yes").textContent = yesLabel;
+    $("#confirm-modal").classList.remove("hidden");
+  });
+}
+function settleConfirm(v) {
+  $("#confirm-modal").classList.add("hidden");
+  confirmResolve?.(v);
+  confirmResolve = null;
+}
+$("#confirm-yes").addEventListener("click", () => settleConfirm(true));
+$("#confirm-no").addEventListener("click", () => settleConfirm(false));
+$("#confirm-modal .modal-backdrop").addEventListener("click", () => settleConfirm(false));
+
 /* ---------------- View switching ---------------- */
 function switchView(name) {
   $$(".tab, .bn-item").forEach((t) =>
@@ -241,26 +290,42 @@ function renderCollection() {
 
   empty.classList.toggle("hidden", state.inventory.length > 0);
   grid.classList.toggle("hidden", state.inventory.length === 0);
+  grid.classList.toggle("selecting", state.selectMode);
 
   const groupBy = $("#collection-group").value;
   if (groupBy === "none") {
     grid.innerHTML = items.map(collectionCardHTML).join("");
+    updateSelectBar();
     return;
   }
 
-  const keyOf = (i) =>
-    groupBy === "set" ? i.set || "Unknown set" : i.rarity || "Unknown rarity";
-  const groups = new Map();
-  for (const i of items) {
-    const k = keyOf(i);
-    if (!groups.has(k)) groups.set(k, []);
-    groups.get(k).push(i);
+  let ordered;
+  if (groupBy === "custom") {
+    // User-defined groups, in the order they were created, then "Ungrouped".
+    // Empty groups still show so a freshly created one is visible.
+    const buckets = new Map(state.groups.map((g) => [g, []]));
+    const loose = [];
+    for (const i of items) {
+      if (i.group && buckets.has(i.group)) buckets.get(i.group).push(i);
+      else loose.push(i);
+    }
+    ordered = [...buckets.entries()];
+    if (loose.length) ordered.push(["Ungrouped", loose]);
+  } else {
+    const keyOf = (i) =>
+      groupBy === "set" ? i.set || "Unknown set" : i.rarity || "Unknown rarity";
+    const groups = new Map();
+    for (const i of items) {
+      const k = keyOf(i);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(i);
+    }
+    ordered = [...groups.entries()].sort((a, b) => {
+      const va = a[1].reduce((s, i) => s + (i.marketPrice || 0) * i.quantity, 0);
+      const vb = b[1].reduce((s, i) => s + (i.marketPrice || 0) * i.quantity, 0);
+      return vb - va;
+    });
   }
-  const ordered = [...groups.entries()].sort((a, b) => {
-    const va = a[1].reduce((s, i) => s + (i.marketPrice || 0) * i.quantity, 0);
-    const vb = b[1].reduce((s, i) => s + (i.marketPrice || 0) * i.quantity, 0);
-    return vb - va;
-  });
 
   grid.innerHTML = ordered
     .map(([name, list]) => {
@@ -274,20 +339,28 @@ function renderCollection() {
           <span class="g-count">${qty} card${qty === 1 ? "" : "s"}</span>
           <span class="g-total">${money(total)}</span>
         </div>`;
-      const cards = collapsed ? "" : list.map(collectionCardHTML).join("");
+      const cards = collapsed
+        ? ""
+        : list.length
+          ? list.map(collectionCardHTML).join("")
+          : `<p class="group-empty">No cards yet — use <b>☑ Select</b> to move cards here.</p>`;
       return header + cards;
     })
     .join("");
+  updateSelectBar();
 }
 
 function collectionCardHTML(i) {
   const lineVal = (i.marketPrice || 0) * i.quantity;
+  const selected = state.selected.has(i.id);
   return `
-    <div class="card" data-inv="${i.id}">
+    <div class="card ${selected ? "selected" : ""}" data-inv="${i.id}">
+      <span class="sel-check">✓</span>
       <div class="card-img-wrap" data-detail="${i.productId}">
         <img loading="lazy" decoding="async" src="${cardImg(i.productId)}" alt="${esc(i.name)}"
              onerror="this.onerror=null;this.src='${esc(i.imageLarge || i.image)}'" />
         <span class="card-qty-badge">×${i.quantity}</span>
+        ${i.group ? `<span class="group-badge">🗂 ${esc(i.group)}</span>` : ""}
       </div>
       <div class="card-body" data-detail="${i.productId}">
         <div class="card-name">${esc(i.name)}</div>
@@ -298,10 +371,10 @@ function collectionCardHTML(i) {
         </div>
       </div>
       <div class="mini-controls">
-        <button class="qty-btn" data-dec="${i.id}">−</button>
+        <button class="qty-btn" data-dec="${i.id}" aria-label="One less">−</button>
         <span class="qty-num">${i.quantity}</span>
-        <button class="qty-btn" data-inc="${i.id}">+</button>
-        <button class="trash" data-del="${i.id}" title="Remove">🗑</button>
+        <button class="qty-btn" data-inc="${i.id}" aria-label="One more">+</button>
+        <button class="trash" data-del="${i.id}" title="Remove" aria-label="Remove">🗑</button>
       </div>
     </div>`;
 }
@@ -319,6 +392,18 @@ $("#collection-grid").addEventListener("click", async (e) => {
     return renderCollection();
   }
 
+  // In select mode any tap on a card toggles its selection.
+  if (state.selectMode) {
+    const card = e.target.closest("[data-inv]");
+    if (!card) return;
+    const id = card.dataset.inv;
+    if (state.selected.has(id)) state.selected.delete(id);
+    else state.selected.add(id);
+    card.classList.toggle("selected", state.selected.has(id));
+    updateSelectBar();
+    return;
+  }
+
   const inc = e.target.closest("[data-inc]");
   const dec = e.target.closest("[data-dec]");
   const del = e.target.closest("[data-del]");
@@ -328,11 +413,16 @@ $("#collection-grid").addEventListener("click", async (e) => {
   if (dec) return changeQty(dec.dataset.dec, -1);
   if (del) {
     const item = state.inventory.find((i) => i.id === del.dataset.del);
-    if (item && confirm(`Remove ${item.name} from your collection?`)) {
+    if (!item) return;
+    if (!(await appConfirm(`Remove ${item.name} from your collection?`))) return;
+    try {
       await api.deleteItem(item.id);
       state.inventory = state.inventory.filter((i) => i.id !== item.id);
+      writeUserSnapshot();
       renderCollection();
       toast("Removed");
+    } catch {
+      toast("Couldn't remove — check your connection");
     }
     return;
   }
@@ -343,10 +433,175 @@ async function changeQty(id, delta) {
   const item = state.inventory.find((i) => i.id === id);
   if (!item) return;
   const q = item.quantity + delta;
-  await api.patchItem(id, { quantity: q });
-  if (q <= 0) state.inventory = state.inventory.filter((i) => i.id !== id);
-  else item.quantity = q;
+  // Going to zero removes the card — make sure that's intended.
+  if (q <= 0 && !(await appConfirm(`Remove ${item.name} from your collection?`, "Remove"))) return;
+  try {
+    await api.patchItem(id, { quantity: q });
+  } catch {
+    return toast("Couldn't update — check your connection");
+  }
+  if (q <= 0) {
+    state.inventory = state.inventory.filter((i) => i.id !== id);
+    toast("Removed");
+  } else {
+    item.quantity = q;
+  }
+  writeUserSnapshot();
   renderCollection();
+}
+
+/* ---------------- Multi-select ---------------- */
+
+function setSelectMode(on) {
+  state.selectMode = on;
+  if (!on) state.selected.clear();
+  $("#select-toggle").classList.toggle("active", on);
+  $("#select-toggle").textContent = on ? "✕ Done" : "☑ Select";
+  $("#select-bar").classList.toggle("hidden", !on);
+  renderCollection();
+}
+
+function updateSelectBar() {
+  if (!state.selectMode) return;
+  // Drop selections that no longer exist (e.g. after a delete).
+  for (const id of [...state.selected]) {
+    if (!state.inventory.some((i) => i.id === id)) state.selected.delete(id);
+  }
+  const n = state.selected.size;
+  $("#sel-count").textContent = `${n} selected`;
+  $("#sel-delete").disabled = !n;
+  $("#sel-group").disabled = !n;
+  $("#sel-all").textContent =
+    n === state.inventory.length && n > 0 ? "Clear all" : "Select all";
+}
+
+$("#select-toggle").addEventListener("click", () => setSelectMode(!state.selectMode));
+$("#sel-cancel").addEventListener("click", () => setSelectMode(false));
+
+$("#sel-all").addEventListener("click", () => {
+  if (state.selected.size === state.inventory.length) state.selected.clear();
+  else state.inventory.forEach((i) => state.selected.add(i.id));
+  renderCollection();
+});
+
+$("#sel-delete").addEventListener("click", async () => {
+  const ids = [...state.selected];
+  if (!ids.length) return;
+  const label = ids.length === 1 ? "this card" : `these ${ids.length} cards`;
+  if (!(await appConfirm(`Delete ${label} from your collection?`))) return;
+  try {
+    const res = await api.bulk(ids, "delete");
+    state.inventory = res.items;
+    writeUserSnapshot();
+    toast(`Deleted ${res.affected} card${res.affected === 1 ? "" : "s"}`);
+    setSelectMode(false);
+  } catch {
+    toast("Couldn't delete — check your connection");
+  }
+});
+
+$("#sel-group").addEventListener("click", () => {
+  if (state.selected.size) openGroupSheet("assign");
+});
+
+/* ---------------- Custom groups ---------------- */
+
+function openGroupSheet(mode) {
+  // mode "assign": moving the current selection; "manage": just editing groups
+  const body = $("#group-sheet-body");
+  const n = state.selected.size;
+  const rows = state.groups
+    .map(
+      (g) => `
+      <div class="group-row" data-pick="${esc(g)}">
+        <span class="group-row-icon">🗂</span>
+        <span class="group-row-name">${esc(g)}</span>
+        <span class="group-row-count">${state.inventory.filter((i) => i.group === g).length}</span>
+        <button class="group-row-del" data-gdel="${esc(g)}" title="Delete group">🗑</button>
+      </div>`
+    )
+    .join("");
+  body.innerHTML = `
+    <div class="sheet-grip"></div>
+    <h3 class="group-sheet-title">${mode === "assign" ? `Move ${n} card${n === 1 ? "" : "s"} to…` : "My groups"}</h3>
+    ${rows || `<p class="sheet-none">No groups yet — create your first one below.</p>`}
+    ${mode === "assign" ? `<div class="group-row ungroup" data-pick=""><span class="group-row-icon">✕</span><span class="group-row-name">Remove from group</span></div>` : ""}
+    <div class="group-new">
+      <input id="group-new-name" class="filter-input" placeholder="New group name…" maxlength="40" />
+      <button class="btn primary" id="group-new-btn">＋ Create</button>
+    </div>`;
+  $("#group-sheet").classList.remove("hidden");
+
+  $("#group-new-btn").addEventListener("click", async () => {
+    const name = $("#group-new-name").value.trim();
+    if (!name) return;
+    try {
+      const res = await api.createGroup(name);
+      state.groups = res.groups;
+      writeUserSnapshot();
+      if (mode === "assign") return assignSelectedToGroup(name);
+      openGroupSheet(mode); // re-render list
+    } catch (e) {
+      toast(e.message);
+    }
+  });
+  $("#group-new-name").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") $("#group-new-btn").click();
+  });
+}
+
+async function assignSelectedToGroup(name) {
+  const ids = [...state.selected];
+  try {
+    const res = await api.bulk(ids, "group", name || null);
+    state.inventory = res.items;
+    state.groups = res.groups;
+    writeUserSnapshot();
+    closeGroupSheet();
+    setSelectMode(false);
+    if (name) $("#collection-group").value = "custom"; // show the result
+    renderCollection();
+    toast(name ? `Moved ${res.affected} to “${name}”` : `Removed ${res.affected} from group`);
+  } catch {
+    toast("Couldn't move — check your connection");
+  }
+}
+
+function closeGroupSheet() {
+  $("#group-sheet").classList.add("hidden");
+}
+
+$("#group-sheet").addEventListener("click", async (e) => {
+  if (e.target.closest("[data-gclose]")) return closeGroupSheet();
+  const gdel = e.target.closest("[data-gdel]");
+  if (gdel) {
+    e.stopPropagation();
+    const name = gdel.dataset.gdel;
+    if (!(await appConfirm(`Delete the group “${name}”? Cards in it stay in your collection.`, "Delete group"))) return;
+    try {
+      const res = await api.deleteGroup(name);
+      state.groups = res.groups;
+      state.inventory = res.items;
+      writeUserSnapshot();
+      renderCollection();
+      openGroupSheet(state.selectMode ? "assign" : "manage");
+    } catch {
+      toast("Couldn't delete group");
+    }
+    return;
+  }
+  const pick = e.target.closest("[data-pick]");
+  if (pick && state.selectMode) assignSelectedToGroup(pick.dataset.pick);
+});
+
+// Keep the cached snapshot in sync so groups survive an offline reopen.
+function writeUserSnapshot() {
+  writeCache(CACHE_DATA, {
+    inventory: state.inventory,
+    wishlist: state.wishlist,
+    history: state.history,
+    groups: state.groups,
+  });
 }
 
 $("#export-csv").addEventListener("click", () => {
@@ -1038,13 +1293,16 @@ function closeModals() {
   $("#detail-modal").classList.add("hidden");
   $("#camera-modal").classList.add("hidden");
   $("#chip-sheet").classList.add("hidden");
+  $("#group-sheet").classList.add("hidden");
   stopCamera();
 }
 document.addEventListener("click", (e) => {
   if (e.target.closest("[data-close]")) closeModals();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeModals();
+  if (e.key !== "Escape") return;
+  if (!$("#confirm-modal").classList.contains("hidden")) return settleConfirm(false);
+  closeModals();
 });
 
 /* ---------------- Camera / OCR scan ---------------- */
@@ -2149,8 +2407,6 @@ function renderChipSheet(c) {
 }
 
 /* ---------------- Install (PWA) ---------------- */
-let deferredPrompt = null;
-const installBtn = $("#install-btn");
 const ua = navigator.userAgent;
 const isStandalone =
   window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone;
@@ -2158,23 +2414,9 @@ const isStandalone =
 const isIOS =
   /iphone|ipad|ipod/i.test(ua) ||
   (/macintosh/i.test(ua) && navigator.maxTouchPoints > 1);
-const isAndroid = /android/i.test(ua);
 
-// Always offer the button (unless already installed) so it's discoverable on
-// every platform. The native prompt is used when the browser provides it;
-// otherwise we show manual instructions.
-if (!isStandalone) installBtn.classList.remove("hidden");
-
-window.addEventListener("beforeinstallprompt", (e) => {
-  e.preventDefault();
-  deferredPrompt = e;
-  if (!isStandalone) installBtn.classList.remove("hidden");
-});
-window.addEventListener("appinstalled", () => {
-  installBtn.classList.add("hidden");
-  deferredPrompt = null;
-  toast("Installed! Find Kairos on your home screen.");
-});
+// Suppress Chrome's mini-infobar; installing stays available from the browser menu.
+window.addEventListener("beforeinstallprompt", (e) => e.preventDefault());
 
 // One-time hint banner for iPhone/iPad Safari users (the platform with no
 // native install prompt). Dismissable; never shown again once closed or installed.
@@ -2184,42 +2426,6 @@ if (isIOS && !isStandalone && !localStorage.getItem("iosBannerDismissed")) {
 $("#ios-banner-close")?.addEventListener("click", () => {
   $("#ios-install-banner").classList.add("hidden");
   localStorage.setItem("iosBannerDismissed", "1");
-});
-
-installBtn.addEventListener("click", async () => {
-  if (deferredPrompt) {
-    deferredPrompt.prompt();
-    const { outcome } = await deferredPrompt.userChoice;
-    if (outcome === "accepted") installBtn.classList.add("hidden");
-    deferredPrompt = null;
-    return;
-  }
-  if (isIOS) {
-    alert(
-      "Install on iPhone / iPad (Safari):\n\n" +
-        "1. Tap the Share button  ⬆️  (the square with an up-arrow) in Safari's toolbar.\n" +
-        "2. Scroll down and tap  “Add to Home Screen”.\n" +
-        "3. Tap  Add  (top-right).\n\n" +
-        "Then open Kairos from your home screen — full-screen, with camera support.\n\n" +
-        "Note: this only works in Safari (not Chrome) on iPhone/iPad."
-    );
-  } else if (isAndroid) {
-    alert(
-      "Install on Android (Chrome):\n\n" +
-        "1. Tap the  ⋮  menu (top-right).\n" +
-        "2. Tap  “Install app”  or  “Add to Home screen”.\n" +
-        "3. Confirm.\n\n" +
-        "If you don't see it, reload the page once and try again — it must be the\n" +
-        "secure https:// address (the tunnel link works)."
-    );
-  } else {
-    alert(
-      "Install on desktop (Chrome / Edge):\n\n" +
-        "Click the install icon (a monitor with a ⬇ arrow) at the right end of the\n" +
-        "address bar — or open the  ⋮  menu and choose  “Install Kairos Pokémon”.\n\n" +
-        "Requires the secure https:// address."
-    );
-  }
 });
 
 /* ---------------- Init ---------------- */
@@ -2286,12 +2492,9 @@ async function loadUserData() {
     state.inventory = inv.items || [];
     state.wishlist = wish.wishlist || [];
     state.history = inv.history || [];
+    state.groups = inv.groups || [];
     // Snapshot for instant rendering on the next app open.
-    writeCache(CACHE_DATA, {
-      inventory: state.inventory,
-      wishlist: state.wishlist,
-      history: state.history,
-    });
+    writeUserSnapshot();
   } catch {
     // Server unreachable (asleep/offline) — keep whatever is on screen
     // (usually the cached snapshot) instead of blanking the collection.
@@ -2363,6 +2566,9 @@ $("#logout-btn").addEventListener("click", async () => {
   localStorage.removeItem(CACHE_DATA);
   state.inventory = [];
   state.wishlist = [];
+  state.history = [];
+  state.groups = [];
+  setSelectMode(false);
   $("#user-dropdown").classList.add("hidden");
   setAuthMode("login");
   showAuth();
@@ -2405,6 +2611,7 @@ async function syncInBackground(attempt = 0) {
       state.inventory = snap.inventory || [];
       state.wishlist = snap.wishlist || [];
       state.history = snap.history || [];
+      state.groups = snap.groups || [];
       renderCollection();
       renderWishlist();
     }

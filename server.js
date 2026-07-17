@@ -950,6 +950,7 @@ async function loadDb(userId) {
   if (!Array.isArray(db.items)) db.items = [];
   if (!Array.isArray(db.wishlist)) db.wishlist = [];
   if (!Array.isArray(db.history)) db.history = [];
+  if (!Array.isArray(db.groups)) db.groups = []; // user-defined collection groups
   return db;
 }
 
@@ -973,7 +974,15 @@ async function saveDb(userId, db) {
   if (mongo) {
     await mongo.userdata.updateOne(
       { userId },
-      { $set: { userId, items: db.items, wishlist: db.wishlist, history: db.history } },
+      {
+        $set: {
+          userId,
+          items: db.items,
+          wishlist: db.wishlist,
+          history: db.history,
+          groups: db.groups,
+        },
+      },
       { upsert: true }
     );
     return;
@@ -1123,6 +1132,7 @@ app.patch("/api/inventory/:id", requireAuth, async (req, res) => {
   if (b.quantity !== undefined) item.quantity = Math.max(0, parseInt(b.quantity) || 0);
   if (b.condition !== undefined) item.condition = b.condition;
   if (b.marketPrice !== undefined) item.marketPrice = b.marketPrice;
+  if (b.group !== undefined) item.group = b.group || null; // custom group name
   item.updatedAt = new Date().toISOString();
   if (item.quantity === 0) {
     db.items = db.items.filter((i) => i.id !== item.id);
@@ -1138,6 +1148,60 @@ app.delete("/api/inventory/:id", requireAuth, async (req, res) => {
   if (db.items.length === before) return res.status(404).json({ error: "Not found" });
   await saveDb(req.userId, db);
   res.json({ ok: true });
+});
+
+// Bulk operations for multi-select: delete several items or move them into a
+// group with ONE request (one save, one history point).
+app.post("/api/inventory/bulk", requireAuth, async (req, res) => {
+  const b = req.body || {};
+  const ids = Array.isArray(b.ids) ? b.ids : [];
+  if (!ids.length) return res.status(400).json({ error: "ids required" });
+  const db = await loadDb(req.userId);
+  const idSet = new Set(ids);
+  let affected = 0;
+  if (b.action === "delete") {
+    const before = db.items.length;
+    db.items = db.items.filter((i) => !idSet.has(i.id));
+    affected = before - db.items.length;
+  } else if (b.action === "group") {
+    const group = b.group || null;
+    for (const item of db.items) {
+      if (idSet.has(item.id)) {
+        item.group = group;
+        item.updatedAt = new Date().toISOString();
+        affected++;
+      }
+    }
+    if (group && !db.groups.includes(group)) db.groups.push(group);
+  } else {
+    return res.status(400).json({ error: "action must be delete or group" });
+  }
+  await saveDb(req.userId, db);
+  res.json({ ok: true, affected, items: db.items, groups: db.groups });
+});
+
+/* ---------------- Custom groups ---------------- */
+
+app.post("/api/groups", requireAuth, async (req, res) => {
+  const name = String(req.body?.name || "").trim().slice(0, 40);
+  if (!name) return res.status(400).json({ error: "Group name required" });
+  const db = await loadDb(req.userId);
+  if (!db.groups.includes(name)) {
+    db.groups.push(name);
+    await saveDb(req.userId, db);
+  }
+  res.json({ groups: db.groups });
+});
+
+app.delete("/api/groups/:name", requireAuth, async (req, res) => {
+  const name = req.params.name;
+  const db = await loadDb(req.userId);
+  db.groups = db.groups.filter((g) => g !== name);
+  for (const item of db.items) {
+    if (item.group === name) item.group = null; // cards stay, group tag clears
+  }
+  await saveDb(req.userId, db);
+  res.json({ groups: db.groups, items: db.items });
 });
 
 /* ---------------- Wishlist ---------------- */
