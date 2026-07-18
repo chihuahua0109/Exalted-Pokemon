@@ -1417,9 +1417,16 @@ function captureFromGuide() {
   } catch { /* fall back to the last loop detection */ }
   if (!box && lastCardBox && Date.now() - lastCardBox.time < 500) box = lastCardBox;
 
-  // Crop tight around the card when we know where it is; otherwise take the
-  // full visible stage (manual shutter with no card locked).
-  let r = stage;
+  // Crop around the card when we know where it is. With no confident fix,
+  // fall back to the GUIDE plus a margin — users line the card up with the
+  // guide, and cropping there (not the whole stage) keeps neighboring cards
+  // on the table out of the shot so OCR reads the right one.
+  let r = {
+    x: Math.max(stage.x, g.x - g.w * 0.15),
+    y: Math.max(stage.y, g.y - g.h * 0.15),
+  };
+  r.w = Math.min(stage.x + stage.w, g.x + g.w * 1.15) - r.x;
+  r.h = Math.min(stage.y + stage.h, g.y + g.h * 1.15) - r.y;
   if (box && box.w > g.w * 0.45 && box.h > g.h * 0.45) {
     const x = Math.max(0, box.x);
     const y = Math.max(0, box.y);
@@ -1520,7 +1527,10 @@ function analyzeFrame() {
   }
 
   // Score a straight line at every position, trying several slopes (hands
-  // tilt): score = covered fraction of the line's full length.
+  // tilt). Score = longest CONTIGUOUS run of hits (small gaps bridged) as a
+  // fraction of the frame. Runs, not raw counts, so a card that spans only
+  // ~60% of the frame still scores 0.6 — while wood grain and bedding, whose
+  // hits are everywhere but never line up, only make short runs.
   const SLOPES = [-9, -6, -3, 0, 3, 6, 9];
   const scanLines = (mask, nPos, len) => {
     const score = new Float32Array(nPos);
@@ -1529,16 +1539,26 @@ function analyzeFrame() {
       let best = 0;
       let bestSl = 0;
       for (const sl of SLOPES) {
-        let cnt = 0;
+        let run = 0;
+        let maxRun = 0;
+        let gap = 3;
         for (let t = 0; t < len; t++) {
           const d = pos + Math.round((sl * t) / len);
+          let hit = false;
           if (d >= 1 && d < nPos - 1) {
             const at = d * len + t;
-            if (mask[at] || mask[at - len] || mask[at + len]) cnt++;
+            hit = !!(mask[at] || mask[at - len] || mask[at + len]);
+          }
+          if (hit) {
+            run += 1 + (gap < 3 ? gap : 0); // bridge gaps of ≤2 pixels
+            gap = 0;
+            if (run > maxRun) maxRun = run;
+          } else if (++gap > 2) {
+            run = 0;
           }
         }
-        if (cnt > best) {
-          best = cnt;
+        if (maxRun > best) {
+          best = maxRun;
           bestSl = sl;
         }
       }
@@ -1556,14 +1576,14 @@ function analyzeFrame() {
   const candidates = ({ score, slope }, nPos) => {
     const sorted = [...score].sort((a, b) => a - b);
     const median = sorted[Math.floor(nPos / 2)];
-    const need = Math.max(0.55, median * 1.35);
+    const need = Math.max(0.45, median * 1.35);
     const out = [];
     for (let p = 1; p < nPos - 1; p++) {
       if (score[p] >= need && score[p] >= score[p - 1] && score[p] > score[p + 1]) {
         out.push({ pos: p + slope[p] / 2, score: score[p] }); // midline of tilted edge
       }
     }
-    return out.sort((a, b) => b.score - a.score).slice(0, 8);
+    return out.sort((a, b) => b.score - a.score).slice(0, 10);
   };
   const vCands = candidates(vScan, DET_W);
   const hCands = candidates(hScan, DET_H);
@@ -1577,10 +1597,15 @@ function analyzeFrame() {
   const MIN_H = DET_H * 0.42;
 
   // Best 4-line rectangle with card-ish aspect (0.716 ± perspective slop).
-  // Aspect closeness is the main tiebreak — a stack of cards under the one
-  // being scanned throws extra lines, and the box that best matches real card
-  // proportions is the actual card. A small size bonus still favors the outer
-  // edges over the card's inner art-frame lines.
+  // Each edge is scored by CONSISTENCY: its run length must match the box
+  // dimension it claims to bound. A neighboring card's full-height edge
+  // bounding a 60%-height box is a contradiction — that mismatch is what
+  // used to pull the box onto the wrong card and cut the capture off.
+  const edgeFit = (runFrac, lenFull, expected) => {
+    const run = runFrac * lenFull;
+    return Math.min(run, expected) / Math.max(run, expected, 1);
+  };
+  const QUAD_MIN = 2.6; // of ~4.5 — random clutter rarely scores this
   let quad = null;
   for (const L of vCands) for (const R of vCands) {
     const w = R.pos - L.pos;
@@ -1590,12 +1615,16 @@ function analyzeFrame() {
       if (h < MIN_H) continue;
       const asp = detAspect(w, h);
       if (asp < 0.58 || asp > 0.9) continue;
-      const aspFit = 1 - Math.min(1, Math.abs(asp - CARD_WH) / 0.18);
+      const aspFit = 1 - Math.min(1, Math.abs(asp - CARD_WH) / 0.12);
       const q =
-        L.score + R.score + Tp.score + B.score +
+        edgeFit(L.score, DET_H, h) +
+        edgeFit(R.score, DET_H, h) +
+        edgeFit(Tp.score, DET_W, w) +
+        edgeFit(B.score, DET_W, w) +
         0.5 * aspFit +
-        0.15 * (w / DET_W + h / DET_H);
-      if (!quad || q > quad.q) quad = { q, left: L.pos, right: R.pos, top: Tp.pos, bot: B.pos };
+        0.1 * (w / DET_W + h / DET_H);
+      if (q >= QUAD_MIN && (!quad || q > quad.q))
+        quad = { q, left: L.pos, right: R.pos, top: Tp.pos, bot: B.pos };
     }
   }
 
@@ -1707,8 +1736,10 @@ function cardBoxFromAnalysis(a) {
   if (y1 == null) y1 = s.sy + s.sh;
   // Generous margin — the recenter pass on the captured still trims it back
   // to an even border, so err on including too much rather than cutting off.
-  const mw = (x1 - x0) * 0.07;
-  const mh = (y1 - y0) * 0.07;
+  // (Detection midlines can sit a few px inside the physical edge; a tight
+  // margin was shaving card borders off the reads.)
+  const mw = (x1 - x0) * 0.1;
+  const mh = (y1 - y0) * 0.1;
   return {
     x: Math.max(0, x0 - mw),
     y: Math.max(0, y0 - mh),
@@ -1762,10 +1793,13 @@ function detLoop() {
   const cardDetected = a.sides >= 3 && a.hasPair && a.density > 0.028;
   const partiallyIn = a.sides >= 1 && a.density > 0.025;
   const prevBox = lastCardBox;
+  // A single missed frame (motion blur, holo glare) shouldn't wipe the lock —
+  // treat a very recent fix as "still there" for UI/progress purposes.
+  const flicker = !cardDetected && !!(lastCardBox && now - lastCardBox.time < 600);
   if (cardDetected) {
     lastCardBox = cardBoxFromAnalysis(a);
     showCardBox(lastCardBox);
-  } else {
+  } else if (!flicker) {
     hideCardBox();
   }
   // "Steady" = low pixel motion, OR the detected box holding still. The second
@@ -1784,7 +1818,12 @@ function detLoop() {
   const ring = $("#scan-ring");
   guide.classList.remove("detect", "locking");
 
-  if (!cardDetected) {
+  if (!cardDetected && flicker) {
+    // Detection blinked out for a frame — decay progress instead of resetting,
+    // so brief blur/glare doesn't restart the whole hold timer.
+    cardVisibleMs = Math.max(0, cardVisibleMs - elapsed / 2);
+    frameClearMs = 0;
+  } else if (!cardDetected) {
     cardVisibleMs = 0;
     ring.classList.remove("show");
     // Re-arm auto capture once the frame has been clear for a moment
@@ -1868,7 +1907,7 @@ async function recenterCapture(url) {
         if (Math.abs(gray[y * W + x + 1] - gray[y * W + x - 1]) > T) colScore[x]++;
       }
     }
-    // Outermost long lines, searched only near each border (30% bands) so
+    // Outermost long lines, searched only near each border (35% bands) so
     // interior card artwork lines can't masquerade as edges.
     const find = (score, len, from, to, step, need) => {
       for (let i = from; step > 0 ? i < to : i > to; i += step) {
@@ -1876,10 +1915,10 @@ async function recenterCapture(url) {
       }
       return -1;
     };
-    const top = find(rowScore, H, 1, Math.round(H * 0.3), 1, W * 0.5);
-    const bot = find(rowScore, H, H - 2, Math.round(H * 0.7), -1, W * 0.5);
-    const left = find(colScore, W, 1, Math.round(W * 0.3), 1, H * 0.5);
-    const right = find(colScore, W, W - 2, Math.round(W * 0.7), -1, H * 0.5);
+    const top = find(rowScore, H, 1, Math.round(H * 0.35), 1, W * 0.45);
+    const bot = find(rowScore, H, H - 2, Math.round(H * 0.65), -1, W * 0.45);
+    const left = find(colScore, W, 1, Math.round(W * 0.35), 1, H * 0.45);
+    const right = find(colScore, W, W - 2, Math.round(W * 0.65), -1, H * 0.45);
     if (top < 0 || bot < 0 || left < 0 || right < 0) return url;
     const bw = right - left;
     const bh = bot - top;

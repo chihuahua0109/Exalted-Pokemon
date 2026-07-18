@@ -18,16 +18,26 @@ function scanLines(mask, nPos, len) {
     let best = 0;
     let bestSl = 0;
     for (const sl of SLOPES) {
-      let cnt = 0;
+      let run = 0;
+      let maxRun = 0;
+      let gap = 3;
       for (let t = 0; t < len; t++) {
         const d = pos + Math.round((sl * t) / len);
+        let hit = false;
         if (d >= 1 && d < nPos - 1) {
           const at = d * len + t;
-          if (mask[at] || mask[at - len] || mask[at + len]) cnt++;
+          hit = !!(mask[at] || mask[at - len] || mask[at + len]);
+        }
+        if (hit) {
+          run += 1 + (gap < 3 ? gap : 0);
+          gap = 0;
+          if (run > maxRun) maxRun = run;
+        } else if (++gap > 2) {
+          run = 0;
         }
       }
-      if (cnt > best) {
-        best = cnt;
+      if (maxRun > best) {
+        best = maxRun;
         bestSl = sl;
       }
     }
@@ -40,14 +50,14 @@ function scanLines(mask, nPos, len) {
 function candidates({ score, slope }, nPos) {
   const sorted = [...score].sort((a, b) => a - b);
   const median = sorted[Math.floor(nPos / 2)];
-  const need = Math.max(0.55, median * 1.35);
+  const need = Math.max(0.45, median * 1.35);
   const out = [];
   for (let p = 1; p < nPos - 1; p++) {
     if (score[p] >= need && score[p] >= score[p - 1] && score[p] > score[p + 1]) {
       out.push({ pos: p + slope[p] / 2, score: score[p] });
     }
   }
-  return out.sort((a, b) => b.score - a.score).slice(0, 8);
+  return out.sort((a, b) => b.score - a.score).slice(0, 10);
 }
 
 function findCard(vM, hM) {
@@ -57,6 +67,11 @@ function findCard(vM, hM) {
   const MIN_W = DET_W * 0.42;
   const MIN_H = DET_H * 0.42;
 
+  const edgeFit = (runFrac, lenFull, expected) => {
+    const run = runFrac * lenFull;
+    return Math.min(run, expected) / Math.max(run, expected, 1);
+  };
+  const QUAD_MIN = 2.6;
   let quad = null;
   for (const L of vCands) for (const R of vCands) {
     const w = R.pos - L.pos;
@@ -66,12 +81,16 @@ function findCard(vM, hM) {
       if (h < MIN_H) continue;
       const asp = detAspect(w, h);
       if (asp < 0.58 || asp > 0.9) continue;
-      const aspFit = 1 - Math.min(1, Math.abs(asp - CARD_WH) / 0.18);
+      const aspFit = 1 - Math.min(1, Math.abs(asp - CARD_WH) / 0.12);
       const q =
-        L.score + R.score + Tp.score + B.score +
+        edgeFit(L.score, DET_H, h) +
+        edgeFit(R.score, DET_H, h) +
+        edgeFit(Tp.score, DET_W, w) +
+        edgeFit(B.score, DET_W, w) +
         0.5 * aspFit +
-        0.15 * (w / DET_W + h / DET_H);
-      if (!quad || q > quad.q) quad = { q, left: L.pos, right: R.pos, top: Tp.pos, bot: B.pos };
+        0.1 * (w / DET_W + h / DET_H);
+      if (q >= QUAD_MIN && (!quad || q > quad.q))
+        quad = { q, left: L.pos, right: R.pos, top: Tp.pos, bot: B.pos };
     }
   }
 
@@ -183,6 +202,17 @@ addV(m, 9, 30, 128); addV(m, 87, 30, 128);
 addH(m, 30, 9, 87);
 scene("card off bottom edge", m, 3, { left: 9, right: 87, top: 30, bot: null });
 
+// 4b. SMALLER card (~60% of frame) on a cluttered table: neighbor-card edges
+//     run the full frame height at the borders, wood grain speckles everywhere.
+//     The old full-frame-coverage scoring failed exactly this scene.
+m = mkMasks();
+addV(m, 25, 25, 82); addV(m, 71, 25, 82);   // the card (46 x 57 ≈ card aspect)
+addH(m, 25, 25, 71); addH(m, 82, 25, 71);
+addV(m, 2, 0, 128); addV(m, 93, 0, 128);    // neighboring cards at the borders
+addH(m, 5, 0, 96);                           // table edge across the top
+addNoise(m, 0.1);
+scene("small card, busy table", m, 4, { left: 25, right: 71, top: 25, bot: 82 });
+
 // 5. Scattered texture (blanket / wood grain) — must NOT detect.
 m = mkMasks();
 addNoise(m, 0.3);
@@ -194,9 +224,10 @@ addNoise(m, 0.55);
 scene("dense texture", m, 0);
 
 // 7. Square object (coaster) — wrong proportions, must NOT detect.
+//    True square in REAL units: det height = width * kx (det pixels aren't square).
 m = mkMasks();
-addV(m, 20, 20, 90); addV(m, 76, 20, 90);
-addH(m, 20, 20, 76); addH(m, 90, 20, 76);
+addV(m, 20, 20, 70); addV(m, 76, 20, 70);
+addH(m, 20, 20, 76); addH(m, 70, 20, 76);
 scene("square coaster", m, 0);
 
 // ---- editDist1 (server.js) ----
