@@ -1,4 +1,4 @@
-const CACHE = "kairos-v34";
+const CACHE = "kairos-v35";
 const SHELL = [
   "/",
   "/index.html",
