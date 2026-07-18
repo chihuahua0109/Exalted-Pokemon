@@ -150,22 +150,52 @@ app.get("/api/product/:id", async (req, res) => {
  * (https://ocr.space/ocrapi/freekey); falls back to the shared demo key.
  * ------------------------------------------------------------------ */
 
-async function ocrSpace(dataUrl, engine = "2") {
-  const key = process.env.OCRSPACE_API_KEY || "helloworld";
-  const body = new URLSearchParams();
-  body.set("base64Image", dataUrl);
-  body.set("OCREngine", engine);
-  body.set("scale", "true");
-  body.set("language", "eng");
-  body.set("isOverlayRequired", "false");
-  const res = await fetch("https://api.ocr.space/parse/image", {
-    method: "POST",
-    headers: { apikey: key, "content-type": "application/x-www-form-urlencoded" },
-    body,
+// OCR.space free keys reject CONCURRENT and bursty calls — exactly what
+// auto-capturing a stack of cards produces. All OCR calls flow through this
+// single-file queue with a minimum gap, so a burst of scans is smoothed into
+// a steady trickle the API accepts. (Scans still feel fast: the gap is small
+// compared to the OCR round-trip itself.)
+let ocrChain = Promise.resolve();
+let lastOcrAt = 0;
+const OCR_GAP_MS = 450;
+function ocrThrottled(fn) {
+  const run = ocrChain.then(async () => {
+    const wait = lastOcrAt + OCR_GAP_MS - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    try {
+      return await fn();
+    } finally {
+      lastOcrAt = Date.now();
+    }
   });
-  const data = await res.json();
+  ocrChain = run.catch(() => {});
+  return run;
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function ocrSpace(dataUrl, engine = "2", retried = false) {
+  const key = process.env.OCRSPACE_API_KEY || "helloworld";
+  const data = await ocrThrottled(async () => {
+    const body = new URLSearchParams();
+    body.set("base64Image", dataUrl);
+    body.set("OCREngine", engine);
+    body.set("scale", "true");
+    body.set("language", "eng");
+    body.set("isOverlayRequired", "false");
+    const res = await fetch("https://api.ocr.space/parse/image", {
+      method: "POST",
+      headers: { apikey: key, "content-type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    return res.json();
+  });
   // Rate-limit response has a top-level "error" string (not IsErroredOnProcessing).
   if (data.error) {
+    // Per-minute burst limits clear quickly — one spaced retry usually lands.
+    if (!retried) {
+      await sleep(1600);
+      return ocrSpace(dataUrl, engine, true);
+    }
     const err = new Error(data.error);
     err.rateLimited = true;
     err.retryAfter = data.retryAfter || 3600;
@@ -234,8 +264,29 @@ async function ocrSafe(input, engine) {
   }
 }
 
+// Shadowed / underexposed shots: lift exposure BEFORE OCR sees the image.
+// A histogram stretch fixes global darkness; CLAHE (local equalization)
+// recovers text under a shadow falling across part of the card. Only applied
+// when the image is actually dark or flat — clean shots pass through as-is.
+async function fixExposure(dataUrl) {
+  try {
+    const buf = dataUrlToBuffer(dataUrl);
+    const st = await sharp(buf).stats();
+    const lum = st.channels.slice(0, 3).reduce((s, c) => s + c.mean, 0) / 3;
+    const spread = st.channels.slice(0, 3).reduce((s, c) => s + c.stdev, 0) / 3;
+    if (lum >= 95 && spread >= 40) return dataUrl; // well exposed already
+    let img = sharp(buf).normalise({ lower: 1, upper: 99 });
+    if (lum < 80) img = img.clahe({ width: 120, height: 168, maxSlope: 3 });
+    const out = await img.jpeg({ quality: 93 }).toBuffer();
+    return bufToDataUrl(out);
+  } catch {
+    return dataUrl;
+  }
+}
+
 async function ocrCardRegions(dataUrl) {
-  // Primary pass: engine 2 on the ORIGINAL image (best for clean/sharp shots).
+  // Primary pass: engine 2, exposure-corrected (no-op for well-lit shots).
+  dataUrl = await fixExposure(dataUrl);
   const fullText = await ocrSafe(dataUrl, "2");
   const primary = parseCardText(fullText);
 
@@ -1013,6 +1064,9 @@ app.get("/api/health", (req, res) => {
   res.json({
     ok: true,
     storage: mongo ? "mongodb" : "file",
+    // false = running on the shared OCR.space demo key, which throttles after
+    // a handful of scans — set OCRSPACE_API_KEY on the host if you see this.
+    ocrKey: !!process.env.OCRSPACE_API_KEY,
     uptimeSec: Math.round(process.uptime()),
   });
 });

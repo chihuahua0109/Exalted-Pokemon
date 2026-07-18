@@ -1439,6 +1439,29 @@ function analyzeFrame() {
   for (let i = 0, p = 0; i < gray.length; i++, p += 4) {
     gray[i] = 0.299 * data[p] + 0.587 * data[p + 1] + 0.114 * data[p + 2];
   }
+
+  // Shadowed / dim scenes: stretch the 2%-98% brightness range to full scale
+  // so card edges still clear the fixed gradient threshold below. Well-lit
+  // frames (already wide range) pass through untouched.
+  {
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < gray.length; i++) hist[gray[i] | 0]++;
+    const n = gray.length;
+    let lo = 0;
+    let acc = 0;
+    for (; lo < 255 && acc < n * 0.02; lo++) acc += hist[lo];
+    let hi = 255;
+    acc = 0;
+    for (; hi > 1 && acc < n * 0.02; hi--) acc += hist[hi];
+    const range = hi - lo;
+    if (range > 8 && range < 190) {
+      const k = 255 / range;
+      for (let i = 0; i < gray.length; i++) {
+        const v = (gray[i] - lo) * k;
+        gray[i] = v < 0 ? 0 : v > 255 ? 255 : v;
+      }
+    }
+  }
   let motion = 255;
   if (prevGray) {
     let sum = 0;
@@ -2161,7 +2184,7 @@ function ensureTesseract() {
 
 // Identify one card image: server OCR/AI first, local Tesseract as fallback.
 // Returns { parsed, products, confidence, source, rateLimited }.
-async function scanImage(imageUrl) {
+async function scanImage(imageUrl, retried = false) {
   // 1) Cloud OCR via the server — far more accurate, handles holo/foil cards.
   try {
     const jpeg = await toJpeg(imageUrl, 1600);
@@ -2173,6 +2196,12 @@ async function scanImage(imageUrl) {
     if (r.ok) {
       const d = await r.json();
       if (d.rateLimited) {
+        // Burst limits clear within seconds — one delayed retry usually reads
+        // fine. (This is what made scans "stop working" after several cards.)
+        if (!retried) {
+          await new Promise((res) => setTimeout(res, 5000));
+          return scanImage(imageUrl, true);
+        }
         return { parsed: { name: "", number: null, hp: null }, products: [], rateLimited: true };
       }
       if (d.name || (d.products && d.products.length)) {
