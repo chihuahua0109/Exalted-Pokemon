@@ -1414,10 +1414,10 @@ function captureFromGuide() {
 }
 
 // Analyze the guide region for an actual CARD:
-//   sides   – how many of the card's 4 physical edges are visible as long
-//             straight contrast lines near the guide border (0-4). A floor,
-//             table or random scene almost never produces all four.
-//   density – edge busy-ness of the interior (artwork/text).
+//   sides   – 4 when a full card-proportioned rectangle is found anywhere in
+//             the sampled frame, 3 when one edge hangs out of frame and is
+//             inferred from card shape. Floors/tables/bedding don't make one.
+//   density – edge busy-ness of the card interior (artwork/text).
 //   motion  – mean frame-to-frame pixel change; low = held steady.
 function analyzeFrame() {
   const v = cam.video;
@@ -1451,89 +1451,162 @@ function analyzeFrame() {
   }
   prevGray = gray;
 
-  const T = 26; // gradient threshold for a "hard" edge
-  const bx = Math.round(DET_W * 0.2); // side band widths
-  const by = Math.round(DET_H * 0.2);
+  // ---- Whole-frame card-outline search ----
+  // The old detector only looked in narrow bands at the frame border and
+  // demanded each edge be an ISOLATED line. Real scenes broke both rules:
+  // a card held over a stack of other cards fills the bands with edges, and
+  // a card sitting deeper in the frame has edges outside the bands entirely.
+  // Now: find ALL long straight lines anywhere in the frame, then pick the
+  // rectangle with a real card's proportions.
+  const T = 20; // gradient threshold — low enough for dim rooms and sleeves
 
-  // Hit masks per border band: which pixels cross a strong perpendicular
-  // gradient. Bottom/right bands are stored with a LOCAL depth index counting
-  // inward from their side of the frame.
-  const topM = new Uint8Array(by * DET_W);
-  const botM = new Uint8Array(by * DET_W);
-  for (let x = 1; x < DET_W - 1; x++) {
-    for (let y = 1; y < by; y++) {
-      if (Math.abs(gray[(y + 1) * DET_W + x] - gray[(y - 1) * DET_W + x]) > T) topM[y * DET_W + x] = 1;
-      const yy = DET_H - 1 - y;
-      if (Math.abs(gray[(yy + 1) * DET_W + x] - gray[(yy - 1) * DET_W + x]) > T) botM[y * DET_W + x] = 1;
-    }
-  }
-  const leftM = new Uint8Array(bx * DET_H);
-  const rightM = new Uint8Array(bx * DET_H);
+  // Hit masks, indexed [perpendicular position][along-line position]:
+  //   vM: vertical-line hits, vM[x * DET_H + y]
+  //   hM: horizontal-line hits, hM[y * DET_W + x]
+  const vM = new Uint8Array(DET_W * DET_H);
+  const hM = new Uint8Array(DET_W * DET_H);
   for (let y = 1; y < DET_H - 1; y++) {
-    for (let x = 1; x < bx; x++) {
-      if (Math.abs(gray[y * DET_W + x + 1] - gray[y * DET_W + x - 1]) > T) leftM[x * DET_H + y] = 1;
-      const xx = DET_W - 1 - x;
-      if (Math.abs(gray[y * DET_W + xx + 1] - gray[y * DET_W + xx - 1]) > T) rightM[x * DET_H + y] = 1;
+    for (let x = 1; x < DET_W - 1; x++) {
+      if (Math.abs(gray[y * DET_W + x + 1] - gray[y * DET_W + x - 1]) > T) vM[x * DET_H + y] = 1;
+      if (Math.abs(gray[(y + 1) * DET_W + x] - gray[(y - 1) * DET_W + x]) > T) hM[y * DET_W + x] = 1;
     }
   }
 
-  // A card edge is a STRAIGHT ISOLATED line — but hands aren't tripods, so the
-  // line may be TILTED. Fit lines across a range of slopes (±~5°) and keep the
-  // best. Two tests per side:
-  //   frac  – how much of the band the fitted line covers (long line?)
-  //   ratio – line hits vs ALL band hits (isolated line, or busy texture like
-  //           ceilings / blankets / wood grain filling the whole band?)
+  // Score a straight line at every position, trying several slopes (hands
+  // tilt): score = covered fraction of the line's full length.
   const SLOPES = [-9, -6, -3, 0, 3, 6, 9];
-  const lineFit = (mask, depth, len) => {
-    let total = 0;
-    for (let i = 0; i < mask.length; i++) total += mask[i];
-    let best = 0;
-    let bestAt = -1;
-    for (const sl of SLOPES) {
-      for (let base = 1; base < depth; base++) {
+  const scanLines = (mask, nPos, len) => {
+    const score = new Float32Array(nPos);
+    const slope = new Float32Array(nPos);
+    for (let pos = 1; pos < nPos - 1; pos++) {
+      let best = 0;
+      let bestSl = 0;
+      for (const sl of SLOPES) {
         let cnt = 0;
         for (let t = 0; t < len; t++) {
-          const d = base + Math.round((sl * t) / len);
-          if (d >= 1 && d < depth) {
+          const d = pos + Math.round((sl * t) / len);
+          if (d >= 1 && d < nPos - 1) {
             const at = d * len + t;
-            if (mask[at] || (d > 1 && mask[at - len]) || (d < depth - 1 && mask[at + len])) cnt++;
+            if (mask[at] || mask[at - len] || mask[at + len]) cnt++;
           }
         }
         if (cnt > best) {
           best = cnt;
-          bestAt = base + sl / 2; // midline of the tilted edge
+          bestSl = sl;
         }
       }
+      score[pos] = best / len;
+      slope[pos] = bestSl;
     }
-    return { frac: best / len, ratio: best / Math.max(1, total), idx: bestAt };
+    return { score, slope };
   };
-  const top = lineFit(topM, by, DET_W);
-  const bot = lineFit(botM, by, DET_W);
-  const left = lineFit(leftM, bx, DET_H);
-  const right = lineFit(rightM, bx, DET_H);
-  const isEdge = (s) => s.frac > 0.5 && s.ratio > 0.3;
-  const ok = [isEdge(top), isEdge(bot), isEdge(left), isEdge(right)];
-  const sides = ok.filter(Boolean).length;
-  // A card has PARALLEL edge pairs. Wall corners, ceiling lines and door frames
-  // produce stray straight lines but almost never two opposite ones.
-  const hasPair = (ok[0] && ok[1]) || (ok[2] && ok[3]);
+  const vScan = scanLines(vM, DET_W, DET_H);
+  const hScan = scanLines(hM, DET_H, DET_W);
 
-  // Where each detected edge sits, in detection-canvas pixels
-  // (bot/right indexes count inward from the far side).
+  // Candidate edges = PROMINENT local maxima. Texture (bedding, popcorn
+  // ceilings, wood grain) lights up everywhere, so its median score is high
+  // and nothing stands out; a card edge is a peak well above its scene.
+  const candidates = ({ score, slope }, nPos) => {
+    const sorted = [...score].sort((a, b) => a - b);
+    const median = sorted[Math.floor(nPos / 2)];
+    const need = Math.max(0.55, median * 1.35);
+    const out = [];
+    for (let p = 1; p < nPos - 1; p++) {
+      if (score[p] >= need && score[p] >= score[p - 1] && score[p] > score[p + 1]) {
+        out.push({ pos: p + slope[p] / 2, score: score[p] }); // midline of tilted edge
+      }
+    }
+    return out.sort((a, b) => b.score - a.score).slice(0, 8);
+  };
+  const vCands = candidates(vScan, DET_W);
+  const hCands = candidates(hScan, DET_H);
+
+  // Physical card proportions, translated into detection-canvas units (the
+  // sample region isn't square-pixeled on this canvas).
+  const kx = sw / DET_W;
+  const ky = sh / DET_H;
+  const detAspect = (w, h) => (w * kx) / Math.max(1, h * ky); // real-world w/h
+  const MIN_W = DET_W * 0.42;
+  const MIN_H = DET_H * 0.42;
+
+  // Best 4-line rectangle with card-ish aspect (0.716 ± perspective slop).
+  // Aspect closeness is the main tiebreak — a stack of cards under the one
+  // being scanned throws extra lines, and the box that best matches real card
+  // proportions is the actual card. A small size bonus still favors the outer
+  // edges over the card's inner art-frame lines.
+  let quad = null;
+  for (const L of vCands) for (const R of vCands) {
+    const w = R.pos - L.pos;
+    if (w < MIN_W) continue;
+    for (const Tp of hCands) for (const B of hCands) {
+      const h = B.pos - Tp.pos;
+      if (h < MIN_H) continue;
+      const asp = detAspect(w, h);
+      if (asp < 0.58 || asp > 0.9) continue;
+      const aspFit = 1 - Math.min(1, Math.abs(asp - CARD_WH) / 0.18);
+      const q =
+        L.score + R.score + Tp.score + B.score +
+        0.5 * aspFit +
+        0.15 * (w / DET_W + h / DET_H);
+      if (!quad || q > quad.q) quad = { q, left: L.pos, right: R.pos, top: Tp.pos, bot: B.pos };
+    }
+  }
+
+  // 3-line fallback: one edge pair + one perpendicular edge, ONLY when the
+  // missing 4th edge would land off-frame (card hanging out of the guide).
+  // If the inferred edge lands mid-frame, a real card would show it — its
+  // absence means this isn't a card (e.g. a square coaster).
+  let tri = null;
+  if (!quad) {
+    const keep = (q, box) => {
+      if (!tri || q > tri.q) tri = { q, ...box };
+    };
+    for (const L of vCands) for (const R of vCands) {
+      const w = R.pos - L.pos;
+      if (w < MIN_W) continue;
+      const hInf = (w * kx) / CARD_WH / ky; // inferred card height, det units
+      for (const Tp of hCands) {
+        if (Tp.pos + hInf >= DET_H - 4 && Tp.pos + hInf <= DET_H * 1.25)
+          keep(L.score + R.score + Tp.score, { left: L.pos, right: R.pos, top: Tp.pos, bot: null });
+      }
+      for (const B of hCands) {
+        if (B.pos - hInf <= 4 && B.pos - hInf >= -DET_H * 0.25)
+          keep(L.score + R.score + B.score, { left: L.pos, right: R.pos, top: null, bot: B.pos });
+      }
+    }
+    for (const Tp of hCands) for (const B of hCands) {
+      const h = B.pos - Tp.pos;
+      if (h < MIN_H) continue;
+      const wInf = ((h * ky) * CARD_WH) / kx;
+      for (const L of vCands) {
+        if (L.pos + wInf >= DET_W - 4 && L.pos + wInf <= DET_W * 1.25)
+          keep(Tp.score + B.score + L.score, { top: Tp.pos, bot: B.pos, left: L.pos, right: null });
+      }
+      for (const R of vCands) {
+        if (R.pos - wInf <= 4 && R.pos - wInf >= -DET_W * 0.25)
+          keep(Tp.score + B.score + R.score, { top: Tp.pos, bot: B.pos, left: null, right: R.pos });
+      }
+    }
+  }
+
+  const pick = quad || tri;
+  const sides = quad ? 4 : tri ? 3 : Math.min(2, vCands.length + hCands.length);
+  const hasPair = !!pick;
   const edgesAt = {
-    top: ok[0] ? top.idx : null,
-    bot: ok[1] ? DET_H - 1 - bot.idx : null,
-    left: ok[2] ? left.idx : null,
-    right: ok[3] ? DET_W - 1 - right.idx : null,
+    top: pick ? pick.top : null,
+    bot: pick ? pick.bot : null,
+    left: pick ? pick.left : null,
+    right: pick ? pick.right : null,
   };
 
-  // Interior busy-ness (central 60%) — card faces have artwork and text.
+  // Interior busy-ness — card faces have artwork and text. Measured INSIDE
+  // the picked rectangle when there is one, else the frame's middle 60%.
   let edges = 0;
   let total = 0;
-  const ix0 = Math.round(DET_W * 0.2);
-  const ix1 = DET_W - ix0;
-  const iy0 = Math.round(DET_H * 0.2);
-  const iy1 = DET_H - iy0;
+  const ix0 = Math.max(1, Math.round(pick?.left != null ? pick.left + 4 : DET_W * 0.2));
+  const ix1 = Math.min(DET_W - 1, Math.round(pick?.right != null ? pick.right - 4 : DET_W * 0.8));
+  const iy0 = Math.max(1, Math.round(pick?.top != null ? pick.top + 4 : DET_H * 0.2));
+  const iy1 = Math.min(DET_H - 1, Math.round(pick?.bot != null ? pick.bot - 4 : DET_H * 0.8));
   for (let y = iy0; y < iy1; y += 2) {
     for (let x = ix0; x < ix1; x += 2) {
       total++;
@@ -1635,19 +1708,30 @@ function detLoop() {
     detTimer = setTimeout(detLoop, 110);
     return;
   }
-  // A real card shows at least 3 of its 4 physical edges as straight isolated
-  // lines — including one PARALLEL pair — plus a busy interior (artwork/text).
-  // Ceilings, walls, floors and bedding don't produce that structure.
+  // A real card = a rectangle with card proportions (4 edges, or 3 with the
+  // 4th hanging out of frame) plus a busy interior (artwork/text). Ceilings,
+  // walls, floors and bedding don't produce that structure.
   // (density floor is low: pale watercolor-style cards have soft interiors)
   const cardDetected = a.sides >= 3 && a.hasPair && a.density > 0.028;
   const partiallyIn = a.sides >= 1 && a.density > 0.025;
-  const steady = a.motion < 8;
+  const prevBox = lastCardBox;
   if (cardDetected) {
     lastCardBox = cardBoxFromAnalysis(a);
     showCardBox(lastCardBox);
   } else {
     hideCardBox();
   }
+  // "Steady" = low pixel motion, OR the detected box holding still. The second
+  // test matters in dim rooms: sensor noise inflates pixel motion even on a
+  // tripod-still shot, which used to leave auto capture stuck on "hold still".
+  let boxStable = false;
+  if (cardDetected && prevBox && now - prevBox.time < 400) {
+    boxStable =
+      Math.abs(lastCardBox.x - prevBox.x) < lastCardBox.w * 0.035 &&
+      Math.abs(lastCardBox.y - prevBox.y) < lastCardBox.h * 0.035 &&
+      Math.abs(lastCardBox.w - prevBox.w) < lastCardBox.w * 0.07;
+  }
+  const steady = a.motion < 9 || boxStable;
 
   const guide = $("#scan-guide");
   const ring = $("#scan-ring");
