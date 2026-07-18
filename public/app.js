@@ -2072,9 +2072,12 @@ const loadImage = (src) =>
   });
 
 // Downscale to a JPEG data URL (keeps cloud-OCR upload small + fast).
+// The cap matters: cloud OCR rejects files over ~1MB, and a detailed 1920px
+// capture can exceed that — those scans used to fail as silent "no match".
 async function toJpeg(url, maxDim = 1600, quality = 0.92) {
-  // Skip re-encoding if it's already a reasonably-sized JPEG (camera captures).
-  if (url.startsWith("data:image/jpeg") && url.length < 3_500_000) return url;
+  // Skip re-encoding only when the JPEG is already comfortably under the cap
+  // (base64 inflates bytes 4/3, so 1.2M chars ≈ 0.9MB binary).
+  if (url.startsWith("data:image/jpeg") && url.length < 1_200_000) return url;
   const img = await loadImage(url);
   let w = img.naturalWidth || img.width;
   let h = img.naturalHeight || img.height;
@@ -2085,7 +2088,14 @@ async function toJpeg(url, maxDim = 1600, quality = 0.92) {
   c.width = w;
   c.height = h;
   c.getContext("2d").drawImage(img, 0, 0, w, h);
-  return c.toDataURL("image/jpeg", quality);
+  let out = c.toDataURL("image/jpeg", quality);
+  // Detailed holo textures can still blow past the OCR size cap — step the
+  // quality down until the payload fits.
+  while (out.length > 1_200_000 && quality > 0.6) {
+    quality -= 0.12;
+    out = c.toDataURL("image/jpeg", quality);
+  }
+  return out;
 }
 
 // Upscale small captures + grayscale & boost contrast — improves OCR a lot.

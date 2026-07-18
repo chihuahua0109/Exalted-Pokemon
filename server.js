@@ -268,6 +268,8 @@ async function ocrSafe(input, engine) {
 // A histogram stretch fixes global darkness; CLAHE (local equalization)
 // recovers text under a shadow falling across part of the card. Only applied
 // when the image is actually dark or flat — clean shots pass through as-is.
+// (.rotate() bakes in EXIF orientation — re-encoding strips the flag, and a
+// sideways image would put the name/number bands over the wrong regions.)
 async function fixExposure(dataUrl) {
   try {
     const buf = dataUrlToBuffer(dataUrl);
@@ -275,7 +277,7 @@ async function fixExposure(dataUrl) {
     const lum = st.channels.slice(0, 3).reduce((s, c) => s + c.mean, 0) / 3;
     const spread = st.channels.slice(0, 3).reduce((s, c) => s + c.stdev, 0) / 3;
     if (lum >= 95 && spread >= 40) return dataUrl; // well exposed already
-    let img = sharp(buf).normalise({ lower: 1, upper: 99 });
+    let img = sharp(buf).rotate().normalise({ lower: 1, upper: 99 });
     if (lum < 80) img = img.clahe({ width: 120, height: 168, maxSlope: 3 });
     const out = await img.jpeg({ quality: 93 }).toBuffer();
     return bufToDataUrl(out);
@@ -284,9 +286,210 @@ async function fixExposure(dataUrl) {
   }
 }
 
+// OCR.space's free tier rejects files over ~1MB with a processing error that
+// used to surface as a silent "no match". Any image that big gets re-encoded
+// down before the call — 1400px wide is still plenty for card text.
+const OCR_MAX_BYTES = 950 * 1024;
+async function shrinkForOcr(dataUrl) {
+  try {
+    if (dataUrlToBuffer(dataUrl).length <= OCR_MAX_BYTES) return dataUrl;
+    let q = 88;
+    let buf = await sharp(dataUrlToBuffer(dataUrl))
+      .rotate()
+      .resize({ width: 1400, withoutEnlargement: true })
+      .jpeg({ quality: q })
+      .toBuffer();
+    while (buf.length > OCR_MAX_BYTES && q > 55) {
+      q -= 12;
+      buf = await sharp(dataUrlToBuffer(dataUrl))
+        .rotate()
+        .resize({ width: 1400, withoutEnlargement: true })
+        .jpeg({ quality: q })
+        .toBuffer();
+    }
+    return bufToDataUrl(buf);
+  } catch {
+    return dataUrl;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Server-side card crop — the safety net that guarantees OCR sees the
+ * FULL card and nothing else. Clients try to crop at capture time, but a
+ * stale app build or a loose "guide fallback" shot can arrive with the card
+ * small, off-center, or surrounded by table clutter. The name/number OCR
+ * bands are percentages of the image, so a loose frame slides them off the
+ * card. Here we re-detect the card outline in the received image and crop
+ * to it (with margin) before any OCR runs.
+ * Same run-length line detector as the client (public/app.js) — keep in sync.
+ * ------------------------------------------------------------------ */
+const CROP_W = 96;
+const CROP_H = 128;
+const CARD_WH = 63 / 88;
+
+function findCardBox(gray, W, H, kx, ky) {
+  // Contrast-stretch dim frames so edges clear the fixed threshold.
+  {
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < gray.length; i++) hist[gray[i] | 0]++;
+    const n = gray.length;
+    let lo = 0;
+    let acc = 0;
+    for (; lo < 255 && acc < n * 0.02; lo++) acc += hist[lo];
+    let hi = 255;
+    acc = 0;
+    for (; hi > 1 && acc < n * 0.02; hi--) acc += hist[hi];
+    const range = hi - lo;
+    if (range > 8 && range < 190) {
+      const k = 255 / range;
+      for (let i = 0; i < gray.length; i++) {
+        const v = (gray[i] - lo) * k;
+        gray[i] = v < 0 ? 0 : v > 255 ? 255 : v;
+      }
+    }
+  }
+  const T = 20;
+  const vM = new Uint8Array(W * H);
+  const hM = new Uint8Array(W * H);
+  for (let y = 1; y < H - 1; y++) {
+    for (let x = 1; x < W - 1; x++) {
+      if (Math.abs(gray[y * W + x + 1] - gray[y * W + x - 1]) > T) vM[x * H + y] = 1;
+      if (Math.abs(gray[(y + 1) * W + x] - gray[(y - 1) * W + x]) > T) hM[y * W + x] = 1;
+    }
+  }
+  const SLOPES = [-9, -6, -3, 0, 3, 6, 9];
+  const scanLines = (mask, nPos, len) => {
+    const score = new Float32Array(nPos);
+    const slope = new Float32Array(nPos);
+    for (let pos = 1; pos < nPos - 1; pos++) {
+      let best = 0;
+      let bestSl = 0;
+      for (const sl of SLOPES) {
+        let run = 0;
+        let maxRun = 0;
+        let gap = 3;
+        for (let t = 0; t < len; t++) {
+          const d = pos + Math.round((sl * t) / len);
+          let hit = false;
+          if (d >= 1 && d < nPos - 1) {
+            const at = d * len + t;
+            hit = !!(mask[at] || mask[at - len] || mask[at + len]);
+          }
+          if (hit) {
+            run += 1 + (gap < 3 ? gap : 0);
+            gap = 0;
+            if (run > maxRun) maxRun = run;
+          } else if (++gap > 2) {
+            run = 0;
+          }
+        }
+        if (maxRun > best) {
+          best = maxRun;
+          bestSl = sl;
+        }
+      }
+      score[pos] = best / len;
+      slope[pos] = bestSl;
+    }
+    return { score, slope };
+  };
+  const candidates = ({ score, slope }, nPos) => {
+    const sorted = [...score].sort((a, b) => a - b);
+    const median = sorted[Math.floor(nPos / 2)];
+    const need = Math.max(0.45, median * 1.35);
+    const out = [];
+    for (let p = 1; p < nPos - 1; p++) {
+      if (score[p] >= need && score[p] >= score[p - 1] && score[p] > score[p + 1]) {
+        out.push({ pos: p + slope[p] / 2, score: score[p] });
+      }
+    }
+    return out.sort((a, b) => b.score - a.score).slice(0, 10);
+  };
+  const vCands = candidates(scanLines(vM, W, H), W);
+  const hCands = candidates(scanLines(hM, H, W), H);
+  const detAspect = (w, h) => (w * kx) / Math.max(1, h * ky);
+  const MIN_W = W * 0.42;
+  const MIN_H = H * 0.42;
+  const edgeFit = (runFrac, lenFull, expected) => {
+    const run = runFrac * lenFull;
+    return Math.min(run, expected) / Math.max(run, expected, 1);
+  };
+  let quad = null;
+  for (const L of vCands) for (const R of vCands) {
+    const w = R.pos - L.pos;
+    if (w < MIN_W) continue;
+    for (const Tp of hCands) for (const B of hCands) {
+      const h = B.pos - Tp.pos;
+      if (h < MIN_H) continue;
+      const asp = detAspect(w, h);
+      if (asp < 0.55 || asp > 0.95) continue;
+      const aspFit = 1 - Math.min(1, Math.abs(asp - CARD_WH) / 0.14);
+      const q =
+        edgeFit(L.score, H, h) +
+        edgeFit(R.score, H, h) +
+        edgeFit(Tp.score, W, w) +
+        edgeFit(B.score, W, w) +
+        0.5 * aspFit +
+        0.1 * (w / W + h / H);
+      if (q >= 2.6 && (!quad || q > quad.q))
+        quad = { q, left: L.pos, right: R.pos, top: Tp.pos, bot: B.pos };
+    }
+  }
+  return quad;
+}
+
+async function cropToCard(dataUrl) {
+  try {
+    const src = sharp(dataUrlToBuffer(dataUrl)).rotate();
+    const meta = await src.metadata();
+    // metadata() reports pre-rotation size; the pipeline output is rotated.
+    let W0 = meta.width || 0;
+    let H0 = meta.height || 0;
+    if ((meta.orientation || 1) >= 5) [W0, H0] = [H0, W0];
+    if (W0 < 200 || H0 < 200) return dataUrl;
+
+    const raw = await src
+      .clone()
+      .grayscale()
+      .resize(CROP_W, CROP_H, { fit: "fill" })
+      .raw()
+      .toBuffer();
+    const gray = new Float32Array(CROP_W * CROP_H);
+    for (let i = 0; i < gray.length; i++) gray[i] = raw[i];
+
+    const box = findCardBox(gray, CROP_W, CROP_H, W0 / CROP_W, H0 / CROP_H);
+    if (!box) return dataUrl;
+    const bw = box.right - box.left;
+    const bh = box.bot - box.top;
+    // Already fills the frame → the client cropped it fine, don't re-encode.
+    if (bw >= CROP_W * 0.86 && bh >= CROP_H * 0.86) return dataUrl;
+
+    const kx = W0 / CROP_W;
+    const ky = H0 / CROP_H;
+    const m = 0.08; // margin so borders/collector number never get shaved
+    const x0 = Math.max(0, Math.round((box.left - bw * m) * kx));
+    const y0 = Math.max(0, Math.round((box.top - bh * m) * ky));
+    const x1 = Math.min(W0, Math.round((box.right + bw * m) * kx));
+    const y1 = Math.min(H0, Math.round((box.bot + bh * m) * ky));
+    if (x1 - x0 < 220 || y1 - y0 < 300) return dataUrl; // too small to OCR anyway
+
+    const out = await src
+      .extract({ left: x0, top: y0, width: x1 - x0, height: y1 - y0 })
+      .jpeg({ quality: 93 })
+      .toBuffer();
+    return bufToDataUrl(out);
+  } catch {
+    return dataUrl;
+  }
+}
+
 async function ocrCardRegions(dataUrl) {
-  // Primary pass: engine 2, exposure-corrected (no-op for well-lit shots).
+  // Normalize the shot before any OCR: tighten to the card outline (so the
+  // name/number bands below land on the right regions no matter how loose the
+  // client framed it), fix exposure, and keep the upload under the API cap.
+  dataUrl = await cropToCard(dataUrl);
   dataUrl = await fixExposure(dataUrl);
+  dataUrl = await shrinkForOcr(dataUrl);
   const fullText = await ocrSafe(dataUrl, "2");
   const primary = parseCardText(fullText);
 
