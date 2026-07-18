@@ -157,7 +157,7 @@ app.get("/api/product/:id", async (req, res) => {
 // compared to the OCR round-trip itself.)
 let ocrChain = Promise.resolve();
 let lastOcrAt = 0;
-const OCR_GAP_MS = 450;
+const OCR_GAP_MS = 350;
 function ocrThrottled(fn) {
   const run = ocrChain.then(async () => {
     const wait = lastOcrAt + OCR_GAP_MS - Date.now();
@@ -928,19 +928,22 @@ app.post("/api/scan", async (req, res) => {
     let parsed = null;
     let source = "ocr";
     let text = "";
-    try {
-      const ai = await aiVision(img);
-      if (ai && ai.name) {
-        parsed = ai;
-        source = "ai";
-      }
-    } catch {
-      /* fall back to OCR */
+
+    // AI vision (if configured) and OCR are independent — run them together
+    // instead of back-to-back; the response is gated on the slower one either
+    // way, so this cuts the wait roughly in half when both are active.
+    const [aiRes, ocrRes] = await Promise.allSettled([
+      aiVision(img),
+      ocrCardRegions(img),
+    ]);
+    if (aiRes.status === "fulfilled" && aiRes.value?.name) {
+      parsed = aiRes.value;
+      source = "ai";
     }
 
     let rateLimited = false;
-    try {
-      const { fullText, nameText, numText } = await ocrCardRegions(img);
+    if (ocrRes.status === "fulfilled") {
+      const { fullText, nameText, numText } = ocrRes.value;
       text = [fullText, nameText, numText].filter(Boolean).join("\n---\n");
       const ocrParsed = mergeParsed(
         parseCardText(fullText),
@@ -953,11 +956,12 @@ app.post("/api/scan", async (req, res) => {
         if (!parsed.hp && ocrParsed.hp) parsed.hp = ocrParsed.hp;
         if (!parsed.name && ocrParsed.name) parsed.name = ocrParsed.name;
       }
-    } catch (ocrErr) {
+    } else {
+      const ocrErr = ocrRes.reason || new Error("OCR failed");
       if (ocrErr.rateLimited) {
         rateLimited = true;
         if (!parsed) parsed = { name: "", number: null, hp: null };
-      } else {
+      } else if (!parsed) {
         throw ocrErr;
       }
     }
@@ -987,13 +991,18 @@ app.post("/api/scan", async (req, res) => {
 
     for (const q of attempts) {
       // TCGplayer caps page size around 24 — larger values return HTTP 400.
-      ({ products } = await tcgSearch(q, { size: 24 }));
-      // For a name-only query, pull a second page so rarer printings are included.
+      // For name-only queries both pages are fetched CONCURRENTLY (rarer
+      // printings often land on page 2, and sequential fetches doubled the wait).
       if (!parsed.number) {
-        try {
-          const page2 = await tcgSearch(q, { from: 24, size: 24 });
-          if (page2.products?.length) products = products.concat(page2.products);
-        } catch { /* page 2 optional */ }
+        const [p1, p2] = await Promise.allSettled([
+          tcgSearch(q, { size: 24 }),
+          tcgSearch(q, { from: 24, size: 24 }),
+        ]);
+        products = p1.status === "fulfilled" ? p1.value.products : [];
+        if (p2.status === "fulfilled" && p2.value.products?.length)
+          products = products.concat(p2.value.products);
+      } else {
+        ({ products } = await tcgSearch(q, { size: 24 }));
       }
       if (products.length) break;
     }

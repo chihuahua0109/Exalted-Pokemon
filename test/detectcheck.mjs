@@ -54,7 +54,7 @@ function candidates({ score, slope }, nPos) {
   const out = [];
   for (let p = 1; p < nPos - 1; p++) {
     if (score[p] >= need && score[p] >= score[p - 1] && score[p] > score[p + 1]) {
-      out.push({ pos: p + slope[p] / 2, score: score[p] });
+      out.push({ pos: p + slope[p] / 2, p, slope: slope[p], score: score[p] });
     }
   }
   return out.sort((a, b) => b.score - a.score).slice(0, 10);
@@ -63,15 +63,27 @@ function candidates({ score, slope }, nPos) {
 function findCard(vM, hM) {
   const vCands = candidates(scanLines(vM, DET_W, DET_H), DET_W);
   const hCands = candidates(scanLines(hM, DET_H, DET_W), DET_H);
+  const covLine = (mask, nPos, len, cand, a, b) => {
+    const t0 = Math.max(1, Math.round(a));
+    const t1 = Math.min(len - 2, Math.round(b));
+    if (t1 <= t0) return 0;
+    let cnt = 0;
+    for (let t = t0; t <= t1; t++) {
+      const d = Math.round(cand.p + (cand.slope * t) / len);
+      if (d >= 1 && d < nPos - 1) {
+        const at = d * len + t;
+        if (mask[at] || mask[at - len] || mask[at + len]) cnt++;
+      }
+    }
+    return cnt / (t1 - t0 + 1);
+  };
+  const covV = (cand, a, b) => covLine(vM, DET_W, DET_H, cand, a, b);
+  const covH = (cand, a, b) => covLine(hM, DET_H, DET_W, cand, a, b);
   const detAspect = (w, h) => (w * kx) / Math.max(1, h * ky);
   const MIN_W = DET_W * 0.42;
   const MIN_H = DET_H * 0.42;
 
-  const edgeFit = (runFrac, lenFull, expected) => {
-    const run = runFrac * lenFull;
-    return Math.min(run, expected) / Math.max(run, expected, 1);
-  };
-  const QUAD_MIN = 2.6;
+  const QUAD_MIN = 3.0;
   let quad = null;
   for (const L of vCands) for (const R of vCands) {
     const w = R.pos - L.pos;
@@ -81,35 +93,61 @@ function findCard(vM, hM) {
       if (h < MIN_H) continue;
       const asp = detAspect(w, h);
       if (asp < 0.58 || asp > 0.9) continue;
+      const cL = covV(L, Tp.pos, B.pos);
+      if (cL < 0.5) continue;
+      const cR = covV(R, Tp.pos, B.pos);
+      if (cR < 0.5) continue;
+      const cT = covH(Tp, L.pos, R.pos);
+      if (cT < 0.5) continue;
+      const cB = covH(B, L.pos, R.pos);
+      if (cB < 0.5) continue;
       const aspFit = 1 - Math.min(1, Math.abs(asp - CARD_WH) / 0.12);
       const q =
-        edgeFit(L.score, DET_H, h) +
-        edgeFit(R.score, DET_H, h) +
-        edgeFit(Tp.score, DET_W, w) +
-        edgeFit(B.score, DET_W, w) +
+        cL + cR + cT + cB +
         0.5 * aspFit +
-        0.1 * (w / DET_W + h / DET_H);
+        0.2 * (w / DET_W + h / DET_H);
       if (q >= QUAD_MIN && (!quad || q > quad.q))
         quad = { q, left: L.pos, right: R.pos, top: Tp.pos, bot: B.pos };
     }
   }
+
+  const isLattice = (box) => {
+    const bl = box.left ?? 0;
+    const br = box.right ?? DET_W - 1;
+    const bt = box.top ?? 0;
+    const bb = box.bot ?? DET_H - 1;
+    let inter = 0;
+    for (const c of vCands) {
+      if (c.pos > bl + 3 && c.pos < br - 3 && covV(c, bt + 3, bb - 3) >= 0.55) inter++;
+    }
+    for (const c of hCands) {
+      if (c.pos > bt + 3 && c.pos < bb - 3 && covH(c, bl + 3, br - 3) >= 0.55) inter++;
+    }
+    return inter >= 4;
+  };
+  if (quad && isLattice(quad)) quad = null;
 
   let tri = null;
   if (!quad) {
     const keep = (q, box) => {
       if (!tri || q > tri.q) tri = { q, ...box };
     };
+    const TRI_MIN = 2.1;
     for (const L of vCands) for (const R of vCands) {
       const w = R.pos - L.pos;
       if (w < MIN_W) continue;
       const hInf = (w * kx) / CARD_WH / ky;
       for (const Tp of hCands) {
-        if (Tp.pos + hInf >= DET_H - 4 && Tp.pos + hInf <= DET_H * 1.25)
-          keep(L.score + R.score + Tp.score, { left: L.pos, right: R.pos, top: Tp.pos, bot: null });
+        if (Tp.pos + hInf >= DET_H - 4 && Tp.pos + hInf <= DET_H * 1.25) {
+          const q = covV(L, Tp.pos, DET_H) + covV(R, Tp.pos, DET_H) + covH(Tp, L.pos, R.pos);
+          if (q >= TRI_MIN) keep(q, { left: L.pos, right: R.pos, top: Tp.pos, bot: null });
+        }
       }
       for (const B of hCands) {
-        if (B.pos - hInf <= 4 && B.pos - hInf >= -DET_H * 0.25)
-          keep(L.score + R.score + B.score, { left: L.pos, right: R.pos, top: null, bot: B.pos });
+        if (B.pos - hInf <= 4 && B.pos - hInf >= -DET_H * 0.25) {
+          const q = covV(L, 0, B.pos) + covV(R, 0, B.pos) + covH(B, L.pos, R.pos);
+          if (q >= TRI_MIN) keep(q, { left: L.pos, right: R.pos, top: null, bot: B.pos });
+        }
       }
     }
     for (const Tp of hCands) for (const B of hCands) {
@@ -117,15 +155,20 @@ function findCard(vM, hM) {
       if (h < MIN_H) continue;
       const wInf = ((h * ky) * CARD_WH) / kx;
       for (const L of vCands) {
-        if (L.pos + wInf >= DET_W - 4 && L.pos + wInf <= DET_W * 1.25)
-          keep(Tp.score + B.score + L.score, { top: Tp.pos, bot: B.pos, left: L.pos, right: null });
+        if (L.pos + wInf >= DET_W - 4 && L.pos + wInf <= DET_W * 1.25) {
+          const q = covH(Tp, L.pos, DET_W) + covH(B, L.pos, DET_W) + covV(L, Tp.pos, B.pos);
+          if (q >= TRI_MIN) keep(q, { top: Tp.pos, bot: B.pos, left: L.pos, right: null });
+        }
       }
       for (const R of vCands) {
-        if (R.pos - wInf <= 4 && R.pos - wInf >= -DET_W * 0.25)
-          keep(Tp.score + B.score + R.score, { top: Tp.pos, bot: B.pos, left: null, right: R.pos });
+        if (R.pos - wInf <= 4 && R.pos - wInf >= -DET_W * 0.25) {
+          const q = covH(Tp, 0, R.pos) + covH(B, 0, R.pos) + covV(R, Tp.pos, B.pos);
+          if (q >= TRI_MIN) keep(q, { top: Tp.pos, bot: B.pos, left: null, right: R.pos });
+        }
       }
     }
   }
+  if (tri && isLattice(tri)) tri = null;
   return { pick: quad || tri, sides: quad ? 4 : tri ? 3 : 0 };
 }
 
@@ -212,6 +255,27 @@ addV(m, 2, 0, 128); addV(m, 93, 0, 128);    // neighboring cards at the borders
 addH(m, 5, 0, 96);                           // table edge across the top
 addNoise(m, 0.1);
 scene("small card, busy table", m, 4, { left: 25, right: 71, top: 25, bot: 82 });
+
+// 4c. Card with a LONG wood-grain line above it and a shelf edge to its left
+//     (the "offset green box" bug: global lines used to bound a box whose
+//     extent they never touched). Box must land on the CARD.
+m = mkMasks();
+addV(m, 25, 30, 87); addV(m, 71, 30, 87);   // the card (46 x 57)
+addH(m, 30, 25, 71); addH(m, 87, 25, 71);
+addH(m, 8, 0, 96);                           // wood-grain line above, full width
+addH(m, 14, 0, 96);
+addV(m, 8, 0, 128);                          // shelf edge left, full height
+addNoise(m, 0.05);
+scene("card near long stray lines", m, 4, { left: 25, right: 71, top: 30, bot: 87 });
+
+// 4d. KEYBOARD / grid — key rows and columns form card-aspect sub-rectangles
+//     with genuine corners, but many aligned lines CROSS the interior.
+//     Must NOT detect (this fired "Card detected" at a desk full of keyboards).
+m = mkMasks();
+for (let y = 10; y < 128; y += 13) addH(m, y, 4, 92);   // key rows
+for (let x = 6; x < 96; x += 11) addV(m, x, 6, 122);    // key columns
+addNoise(m, 0.04);
+scene("keyboard grid", m, 0);
 
 // 5. Scattered texture (blanket / wood grain) — must NOT detect.
 m = mkMasks();

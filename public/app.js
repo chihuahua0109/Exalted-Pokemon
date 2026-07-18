@@ -1580,13 +1580,35 @@ function analyzeFrame() {
     const out = [];
     for (let p = 1; p < nPos - 1; p++) {
       if (score[p] >= need && score[p] >= score[p - 1] && score[p] > score[p + 1]) {
-        out.push({ pos: p + slope[p] / 2, score: score[p] }); // midline of tilted edge
+        // pos = midline of tilted edge; p/slope kept to re-trace the line.
+        out.push({ pos: p + slope[p] / 2, p, slope: slope[p], score: score[p] });
       }
     }
     return out.sort((a, b) => b.score - a.score).slice(0, 10);
   };
   const vCands = candidates(vScan, DET_W);
   const hCands = candidates(hScan, DET_H);
+
+  // Coverage of one candidate's line WITHIN a given span. Global run length
+  // says "there is a long line at this position somewhere"; this says whether
+  // it is actually present between a and b — which is what stops a wood-grain
+  // line beside the card from bounding a box whose extent it never touches.
+  const covLine = (mask, nPos, len, cand, a, b) => {
+    const t0 = Math.max(1, Math.round(a));
+    const t1 = Math.min(len - 2, Math.round(b));
+    if (t1 <= t0) return 0;
+    let cnt = 0;
+    for (let t = t0; t <= t1; t++) {
+      const d = Math.round(cand.p + (cand.slope * t) / len);
+      if (d >= 1 && d < nPos - 1) {
+        const at = d * len + t;
+        if (mask[at] || mask[at - len] || mask[at + len]) cnt++;
+      }
+    }
+    return cnt / (t1 - t0 + 1);
+  };
+  const covV = (cand, a, b) => covLine(vM, DET_W, DET_H, cand, a, b);
+  const covH = (cand, a, b) => covLine(hM, DET_H, DET_W, cand, a, b);
 
   // Physical card proportions, translated into detection-canvas units (the
   // sample region isn't square-pixeled on this canvas).
@@ -1597,15 +1619,9 @@ function analyzeFrame() {
   const MIN_H = DET_H * 0.42;
 
   // Best 4-line rectangle with card-ish aspect (0.716 ± perspective slop).
-  // Each edge is scored by CONSISTENCY: its run length must match the box
-  // dimension it claims to bound. A neighboring card's full-height edge
-  // bounding a 60%-height box is a contradiction — that mismatch is what
-  // used to pull the box onto the wrong card and cut the capture off.
-  const edgeFit = (runFrac, lenFull, expected) => {
-    const run = runFrac * lenFull;
-    return Math.min(run, expected) / Math.max(run, expected, 1);
-  };
-  const QUAD_MIN = 2.6; // of ~4.5 — random clutter rarely scores this
+  // Every side must be verified along the box's own extent, so all four lines
+  // provably form THIS rectangle rather than just existing somewhere in frame.
+  const QUAD_MIN = 3.0; // covers 4 sides (≤4) + aspect (≤0.5) + size (≤0.2)
   let quad = null;
   for (const L of vCands) for (const R of vCands) {
     const w = R.pos - L.pos;
@@ -1615,39 +1631,71 @@ function analyzeFrame() {
       if (h < MIN_H) continue;
       const asp = detAspect(w, h);
       if (asp < 0.58 || asp > 0.9) continue;
+      const cL = covV(L, Tp.pos, B.pos);
+      if (cL < 0.5) continue;
+      const cR = covV(R, Tp.pos, B.pos);
+      if (cR < 0.5) continue;
+      const cT = covH(Tp, L.pos, R.pos);
+      if (cT < 0.5) continue;
+      const cB = covH(B, L.pos, R.pos);
+      if (cB < 0.5) continue;
       const aspFit = 1 - Math.min(1, Math.abs(asp - CARD_WH) / 0.12);
       const q =
-        edgeFit(L.score, DET_H, h) +
-        edgeFit(R.score, DET_H, h) +
-        edgeFit(Tp.score, DET_W, w) +
-        edgeFit(B.score, DET_W, w) +
+        cL + cR + cT + cB +
         0.5 * aspFit +
-        0.1 * (w / DET_W + h / DET_H);
+        0.2 * (w / DET_W + h / DET_H);
       if (q >= QUAD_MIN && (!quad || q > quad.q))
         quad = { q, left: L.pos, right: R.pos, top: Tp.pos, bot: B.pos };
     }
   }
 
+  // Grid rejection: keyboards, shelves, and window blinds form rectangles with
+  // real corners — but they also have MORE aligned lines CROSSING the interior.
+  // A card's interior has artwork (busy but unaligned) and at most an art-frame
+  // line or two. Count candidate lines that clearly cross inside the box.
+  // (Missing edges of a 3-side pick fall back to the frame boundary.)
+  const isLattice = (box) => {
+    const bl = box.left ?? 0;
+    const br = box.right ?? DET_W - 1;
+    const bt = box.top ?? 0;
+    const bb = box.bot ?? DET_H - 1;
+    let inter = 0;
+    for (const c of vCands) {
+      if (c.pos > bl + 3 && c.pos < br - 3 && covV(c, bt + 3, bb - 3) >= 0.55) inter++;
+    }
+    for (const c of hCands) {
+      if (c.pos > bt + 3 && c.pos < bb - 3 && covH(c, bl + 3, br - 3) >= 0.55) inter++;
+    }
+    return inter >= 4;
+  };
+  if (quad && isLattice(quad)) quad = null;
+
   // 3-line fallback: one edge pair + one perpendicular edge, ONLY when the
   // missing 4th edge would land off-frame (card hanging out of the guide).
   // If the inferred edge lands mid-frame, a real card would show it — its
   // absence means this isn't a card (e.g. a square coaster).
+  // Sides are span-verified over the known extent, like the quad.
   let tri = null;
   if (!quad) {
     const keep = (q, box) => {
       if (!tri || q > tri.q) tri = { q, ...box };
     };
+    const TRI_MIN = 2.1; // 3 sides, each ≥0.5 and averaging ≥0.7
     for (const L of vCands) for (const R of vCands) {
       const w = R.pos - L.pos;
       if (w < MIN_W) continue;
       const hInf = (w * kx) / CARD_WH / ky; // inferred card height, det units
       for (const Tp of hCands) {
-        if (Tp.pos + hInf >= DET_H - 4 && Tp.pos + hInf <= DET_H * 1.25)
-          keep(L.score + R.score + Tp.score, { left: L.pos, right: R.pos, top: Tp.pos, bot: null });
+        if (Tp.pos + hInf >= DET_H - 4 && Tp.pos + hInf <= DET_H * 1.25) {
+          const q = covV(L, Tp.pos, DET_H) + covV(R, Tp.pos, DET_H) + covH(Tp, L.pos, R.pos);
+          if (q >= TRI_MIN) keep(q, { left: L.pos, right: R.pos, top: Tp.pos, bot: null });
+        }
       }
       for (const B of hCands) {
-        if (B.pos - hInf <= 4 && B.pos - hInf >= -DET_H * 0.25)
-          keep(L.score + R.score + B.score, { left: L.pos, right: R.pos, top: null, bot: B.pos });
+        if (B.pos - hInf <= 4 && B.pos - hInf >= -DET_H * 0.25) {
+          const q = covV(L, 0, B.pos) + covV(R, 0, B.pos) + covH(B, L.pos, R.pos);
+          if (q >= TRI_MIN) keep(q, { left: L.pos, right: R.pos, top: null, bot: B.pos });
+        }
       }
     }
     for (const Tp of hCands) for (const B of hCands) {
@@ -1655,15 +1703,20 @@ function analyzeFrame() {
       if (h < MIN_H) continue;
       const wInf = ((h * ky) * CARD_WH) / kx;
       for (const L of vCands) {
-        if (L.pos + wInf >= DET_W - 4 && L.pos + wInf <= DET_W * 1.25)
-          keep(Tp.score + B.score + L.score, { top: Tp.pos, bot: B.pos, left: L.pos, right: null });
+        if (L.pos + wInf >= DET_W - 4 && L.pos + wInf <= DET_W * 1.25) {
+          const q = covH(Tp, L.pos, DET_W) + covH(B, L.pos, DET_W) + covV(L, Tp.pos, B.pos);
+          if (q >= TRI_MIN) keep(q, { top: Tp.pos, bot: B.pos, left: L.pos, right: null });
+        }
       }
       for (const R of vCands) {
-        if (R.pos - wInf <= 4 && R.pos - wInf >= -DET_W * 0.25)
-          keep(Tp.score + B.score + R.score, { top: Tp.pos, bot: B.pos, left: null, right: R.pos });
+        if (R.pos - wInf <= 4 && R.pos - wInf >= -DET_W * 0.25) {
+          const q = covH(Tp, 0, R.pos) + covH(B, 0, R.pos) + covV(R, Tp.pos, B.pos);
+          if (q >= TRI_MIN) keep(q, { top: Tp.pos, bot: B.pos, left: null, right: R.pos });
+        }
       }
     }
   }
+  if (tri && isLattice(tri)) tri = null;
 
   const pick = quad || tri;
   const sides = quad ? 4 : tri ? 3 : Math.min(2, vCands.length + hCands.length);
@@ -1942,6 +1995,32 @@ async function recenterCapture(url) {
   }
 }
 
+// A capture taken during camera warm-up (or with a finger over the lens) is
+// near-black with no detail — sending it to OCR wastes 5-10 s of "Reading…"
+// on a shot that can never match. cam.canvas still holds the captured crop.
+function captureLooksBlank() {
+  try {
+    const src = cam.canvas;
+    const c = document.createElement("canvas");
+    c.width = 24;
+    c.height = 32;
+    const cx = c.getContext("2d", { willReadFrequently: true });
+    cx.drawImage(src, 0, 0, 24, 32);
+    const { data } = cx.getImageData(0, 0, 24, 32);
+    let sum = 0;
+    let max = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const v = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      sum += v;
+      if (v > max) max = v;
+    }
+    const mean = sum / (data.length / 4);
+    return mean < 14 && max < 60;
+  } catch {
+    return false;
+  }
+}
+
 // Capture the current frame into the batch tray. Used by both auto capture
 // and the shutter button. The camera keeps running.
 function captureToBatch() {
@@ -1949,6 +2028,10 @@ function captureToBatch() {
   if (!url) return;
   cardVisibleMs = 0;
   autoArmed = false; // wait for the card to leave the frame before re-firing
+  if (captureLooksBlank()) {
+    setHint("Too dark — point at the card", false);
+    return;
+  }
   flashStage();
   navigator.vibrate?.(35);
   recenterCapture(url).then(addCapture);
@@ -1975,6 +2058,10 @@ function cameraUnavailable(html) {
 async function openCamera() {
   $("#camera-modal").classList.remove("hidden");
   resetScanUI();
+
+  // Wake a sleeping server NOW, not on the first read — a cold start used to
+  // add its whole spin-up time to the first card's "Reading…".
+  fetch(apiUrl("/api/health")).catch(() => {});
 
   // Camera APIs only exist in a secure context (https:// or localhost).
   const secure = window.isSecureContext && navigator.mediaDevices?.getUserMedia;
