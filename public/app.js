@@ -300,7 +300,21 @@ function renderCollection() {
   }
 
   let ordered;
+  let preface = "";
   if (groupBy === "custom") {
+    // First visit: explain the feature and offer creation right here.
+    if (!state.groups.length) {
+      grid.innerHTML = `
+        <div class="group-empty-state">
+          <div class="empty-art">🗂</div>
+          <h3>No groups yet</h3>
+          <p>Make groups like <b>Binder 1</b> or <b>For trade</b>, then use <b>☑ Select</b> to move cards into them.</p>
+          <button class="btn primary" data-newgroup>＋ Create your first group</button>
+        </div>`;
+      updateSelectBar();
+      return;
+    }
+    preface = `<div class="group-toolbar"><button class="btn ghost" data-newgroup>＋ New group</button></div>`;
     // User-defined groups, in the order they were created, then "Ungrouped".
     // Empty groups still show so a freshly created one is visible.
     const buckets = new Map(state.groups.map((g) => [g, []]));
@@ -327,26 +341,28 @@ function renderCollection() {
     });
   }
 
-  grid.innerHTML = ordered
-    .map(([name, list]) => {
-      const total = list.reduce((s, i) => s + (i.marketPrice || 0) * i.quantity, 0);
-      const qty = list.reduce((s, i) => s + i.quantity, 0);
-      const collapsed = state.collapsedGroups.has(name);
-      const header = `
+  grid.innerHTML =
+    preface +
+    ordered
+      .map(([name, list]) => {
+        const total = list.reduce((s, i) => s + (i.marketPrice || 0) * i.quantity, 0);
+        const qty = list.reduce((s, i) => s + i.quantity, 0);
+        const collapsed = state.collapsedGroups.has(name);
+        const header = `
         <div class="group-header ${collapsed ? "collapsed" : ""}" data-group="${esc(name)}">
           <span class="chev">▼</span>
           <h3>${esc(name)}</h3>
           <span class="g-count">${qty} card${qty === 1 ? "" : "s"}</span>
           <span class="g-total">${money(total)}</span>
         </div>`;
-      const cards = collapsed
-        ? ""
-        : list.length
-          ? list.map(collectionCardHTML).join("")
-          : `<p class="group-empty">No cards yet — use <b>☑ Select</b> to move cards here.</p>`;
-      return header + cards;
-    })
-    .join("");
+        const cards = collapsed
+          ? ""
+          : list.length
+            ? list.map(collectionCardHTML).join("")
+            : `<p class="group-empty">No cards yet — use <b>☑ Select</b> to move cards here.</p>`;
+        return header + cards;
+      })
+      .join("");
   updateSelectBar();
 }
 
@@ -384,6 +400,8 @@ $("#collection-sort").addEventListener("change", renderCollection);
 $("#collection-group").addEventListener("change", renderCollection);
 
 $("#collection-grid").addEventListener("click", async (e) => {
+  if (e.target.closest("[data-newgroup]")) return openGroupSheet("manage");
+
   const group = e.target.closest("[data-group]");
   if (group) {
     const name = group.dataset.group;
@@ -510,10 +528,11 @@ function openGroupSheet(mode) {
   // mode "assign": moving the current selection; "manage": just editing groups
   const body = $("#group-sheet-body");
   const n = state.selected.size;
+  const assign = mode === "assign";
   const rows = state.groups
     .map(
       (g) => `
-      <div class="group-row" data-pick="${esc(g)}">
+      <div class="group-row ${assign ? "" : "manage"}" ${assign ? `data-pick="${esc(g)}"` : ""}>
         <span class="group-row-icon">🗂</span>
         <span class="group-row-name">${esc(g)}</span>
         <span class="group-row-count">${state.inventory.filter((i) => i.group === g).length}</span>
@@ -523,14 +542,16 @@ function openGroupSheet(mode) {
     .join("");
   body.innerHTML = `
     <div class="sheet-grip"></div>
-    <h3 class="group-sheet-title">${mode === "assign" ? `Move ${n} card${n === 1 ? "" : "s"} to…` : "My groups"}</h3>
+    <h3 class="group-sheet-title">${assign ? `Move ${n} card${n === 1 ? "" : "s"} to…` : "My groups"}</h3>
+    ${assign ? "" : `<p class="group-sheet-sub">Cards join a group via <b>☑ Select</b> → pick cards → <b>🗂 Group</b>.</p>`}
     ${rows || `<p class="sheet-none">No groups yet — create your first one below.</p>`}
-    ${mode === "assign" ? `<div class="group-row ungroup" data-pick=""><span class="group-row-icon">✕</span><span class="group-row-name">Remove from group</span></div>` : ""}
+    ${assign ? `<div class="group-row ungroup" data-pick=""><span class="group-row-icon">✕</span><span class="group-row-name">Remove from group</span></div>` : ""}
     <div class="group-new">
       <input id="group-new-name" class="filter-input" placeholder="New group name…" maxlength="40" />
       <button class="btn primary" id="group-new-btn">＋ Create</button>
     </div>`;
   $("#group-sheet").classList.remove("hidden");
+  if (!assign) setTimeout(() => $("#group-new-name")?.focus(), 250);
 
   $("#group-new-btn").addEventListener("click", async () => {
     const name = $("#group-new-name").value.trim();
@@ -539,7 +560,10 @@ function openGroupSheet(mode) {
       const res = await api.createGroup(name);
       state.groups = res.groups;
       writeUserSnapshot();
-      if (mode === "assign") return assignSelectedToGroup(name);
+      if (assign) return assignSelectedToGroup(name);
+      $("#collection-group").value = "custom"; // show the new group behind the sheet
+      renderCollection();
+      toast(`Created “${name}”`);
       openGroupSheet(mode); // re-render list
     } catch (e) {
       toast(e.message);

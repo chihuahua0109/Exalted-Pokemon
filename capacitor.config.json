@@ -2,8 +2,9 @@
   "appId": "com.kairos.pokemon",
   "appName": "Kairos Pokemon",
   "webDir": "public",
+  "backgroundColor": "#0c0f1a",
   "ios": {
-    "contentInset": "always"
+    "contentInset": "never"
   },
   "server": {
     "iosScheme": "capacitor"

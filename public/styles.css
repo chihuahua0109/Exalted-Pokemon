@@ -435,8 +435,23 @@ body {
   padding: 14px 16px; margin: 2px 0 8px;
 }
 
+/* ----- Group creation entry points in the collection ----- */
+.group-toolbar { grid-column: 1 / -1; display: flex; }
+.group-toolbar .btn { font-size: 13px; padding: 9px 14px; }
+.group-empty-state {
+  grid-column: 1 / -1; text-align: center;
+  border: 1px dashed var(--line); border-radius: var(--radius);
+  padding: 34px 20px; margin-top: 4px;
+}
+.group-empty-state .empty-art { font-size: 40px; margin-bottom: 8px; }
+.group-empty-state h3 { margin: 0 0 6px; font-size: 17px; }
+.group-empty-state p { color: var(--muted); font-size: 13.5px; margin: 0 auto 16px; max-width: 380px; line-height: 1.5; }
+
 /* ----- Groups sheet ----- */
 .group-sheet-title { margin: 2px 2px 12px; font-size: 17px; }
+.group-sheet-sub { color: var(--muted); font-size: 12.5px; margin: -6px 2px 12px; }
+.group-row.manage { cursor: default; }
+.group-row.manage:hover { border-color: var(--line); }
 .group-row {
   display: flex; align-items: center; gap: 11px;
   background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
